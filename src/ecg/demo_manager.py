@@ -15,15 +15,30 @@ class DemoManager:
     def __init__(self, ecg_test_page):
 
         self.ecg_test_page = ecg_test_page
-        self.demo_fs = 200  # Demo sampling rate (150 Hz)
+        self.demo_fs = 200  # Demo sampling rate (200 Hz)
         self.demo_thread = None
         self.demo_timer = None
         self.demo_heart_rates = []  # For heart rate smoothing
+        # Thread coordination
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
         
         # Wave speed control variables
         self.current_wave_speed = 12.5  # mm/s
         self.samples_per_second = 200  # Base sampling rate
         self.speed_multiplier = 1.0  # Will be calculated based on wave speed
+        
+        # Provide dashboard with effective sampling rate when in demo
+        self._set_demo_sampling_rate(self.samples_per_second)
+        # Fixed metrics store for demo stability
+        self._demo_fixed_metrics = None
+        # Internal running flag to avoid touching Qt widgets from worker thread
+        self._running_demo = False
+        # Stop threads if the page is destroyed
+        try:
+            self.ecg_test_page.destroyed.connect(self._on_page_destroyed)
+        except Exception:
+            pass
     
     def _get_calculation_functions(self):
        
@@ -54,6 +69,17 @@ class DemoManager:
 
     
     
+    def _set_demo_sampling_rate(self, sampling_rate):
+        """Expose effective sampling rate to dashboard calculators via ecg_test_page.sampler."""
+        try:
+            if not hasattr(self.ecg_test_page, 'sampler') or self.ecg_test_page.sampler is None:
+                self.ecg_test_page.sampler = type('Sampler', (), {})()
+            # Keep dashboard filter stable: clamp to >=200 Hz
+            safe_fs = max(200.0, float(sampling_rate))
+            self.ecg_test_page.sampler.sampling_rate = safe_fs
+        except Exception:
+            pass
+
     def toggle_demo_mode(self, is_checked):
         
         if is_checked:
@@ -77,6 +103,9 @@ class DemoManager:
             # Update wave speed settings before starting
             self._update_wave_speed_settings()
             
+            # Reset fixed metrics for new demo session
+            self._demo_fixed_metrics = None
+            self._running_demo = True
             # Start demo data generation in the existing 12-lead grid
             self.start_demo_data()
             
@@ -90,14 +119,32 @@ class DemoManager:
     
     def start_demo_data(self):
         """Start reading real ECG data from dummycsv.csv file with wave speed control"""
+        # Ensure any previous demo resources are stopped before starting new
+        try:
+            self._stop_event.set()
+            if self.demo_thread and self.demo_thread.is_alive():
+                self.demo_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        finally:
+            self._stop_event.clear()
+            self.demo_thread = None
+            # Stop and delete any existing timer
+            try:
+                if self.demo_timer:
+                    self.demo_timer.stop()
+                    self.demo_timer.deleteLater()
+            except Exception:
+                pass
+            self.demo_timer = None
         # Resolve dummycsv.csv from common locations
         ecg_dir = os.path.dirname(__file__)
         src_dir = os.path.abspath(os.path.join(ecg_dir, '..'))
         project_root = os.path.abspath(os.path.join(src_dir, '..'))
         candidates = [
-            os.path.join(ecg_dir, 'dummycsv.csv'),                    # src/ecg/dummycsv.csv
-            os.path.join(project_root, 'dummycsv.csv'),               # project_root/dummycsv.csv
-            os.path.abspath('dummycsv.csv')                           # cwd/dummycsv.csv
+            os.path.join(ecg_dir, 'dummycsv.csv'),
+            os.path.join(project_root, 'dummycsv.csv'),
+            os.path.abspath('dummycsv.csv')
         ]
         csv_path = None
         for p in candidates:
@@ -130,19 +177,22 @@ class DemoManager:
                 self.ecg_test_page.data[i] = np.zeros(self.ecg_test_page.buffer_size)
             
             # Initialize data with first few rows
+            # Prefill enough samples to immediately show ~4 peaks
+            csv_base_fs = int(150 * self.speed_multiplier)  # demo CSV base
+            prefill_needed = min(self.ecg_test_page.buffer_size, max(100, int(csv_base_fs * 4.0)), len(df))
             for lead in lead_columns:
                 if lead in self.ecg_test_page.leads:
                     lead_index = self.ecg_test_page.leads.index(lead)
-                    # Add first few samples to start
-                    initial_samples = min(10, len(df))
-                    for i, value in enumerate(df[lead].iloc[:initial_samples]):
-                        if i < self.ecg_test_page.buffer_size:
-                            self.ecg_test_page.data[lead_index][i] = value
+                    # Add initial prefill samples to start
+                    initial_samples = prefill_needed
+                    series = df[lead].iloc[:initial_samples]
+                    count = min(len(series), self.ecg_test_page.buffer_size)
+                    self.ecg_test_page.data[lead_index][:count] = np.array(series[:count])
             
             # Start reading data row by row from CSV with wave speed control
             def read_csv_data():
-                row_index = 10  # Start from 11th row (first 10 already added)
-                while self.ecg_test_page.demo_toggle.isChecked() and row_index < len(df):
+                row_index = prefill_needed  # continue after prefill
+                while (not self._stop_event.is_set()) and self._running_demo and row_index < len(df):
                     # Read data for all leads
                     for lead in lead_columns:
                         if lead in self.ecg_test_page.leads:
@@ -150,8 +200,9 @@ class DemoManager:
                             value = df[lead].iloc[row_index]
                             
                             # Update data using numpy roll method
-                            self.ecg_test_page.data[lead_index] = np.roll(self.ecg_test_page.data[lead_index], -1)
-                            self.ecg_test_page.data[lead_index][-1] = value
+                            with self._lock:
+                                self.ecg_test_page.data[lead_index] = np.roll(self.ecg_test_page.data[lead_index], -1)
+                                self.ecg_test_page.data[lead_index][-1] = value
                     
                     row_index += 1
                     
@@ -167,17 +218,22 @@ class DemoManager:
                     time.sleep(actual_delay)
             
             # Start CSV data reading in background thread
-            self.demo_thread = threading.Thread(target=read_csv_data, daemon=True)
+            self.demo_thread = threading.Thread(target=read_csv_data, name="ECGDemoCSVThread", daemon=True)
             self.demo_thread.start()
             
+            # Update effective sampling rate for CSV demo (base 150 Hz scaled by speed)
+            self.samples_per_second = int(150 * self.speed_multiplier)
+            self._set_demo_sampling_rate(self.samples_per_second)
+
             # Start timer to update plots with real CSV data
             # Timer interval also affected by wave speed
-            self.demo_timer = QTimer()
+            self.demo_timer = QTimer(self.ecg_test_page)
             self.demo_timer.timeout.connect(self.update_demo_plots)
             
             # Adjust timer interval based on wave speed
-            base_interval = 6.67  # 150 FPS base
-            timer_interval = int(base_interval / self.speed_multiplier)
+            # Use a reasonable UI FPS (~30-60 FPS)
+            base_interval = 33  # ~30 FPS base
+            timer_interval = max(10, int(base_interval / self.speed_multiplier))
             self.demo_timer.start(timer_interval)
             
             print(f"🚀 Demo mode started with wave speed: {self.current_wave_speed}mm/s")
@@ -191,12 +247,19 @@ class DemoManager:
     def update_demo_plots(self):
         current_speed = self.ecg_test_page.settings_manager.get_wave_speed()
         if current_speed != self.current_wave_speed:
+            # Update internal speed and adjust timer interval without full restart
             self._update_wave_speed_settings()
-            # Restart demo with new speed settings
-            if self.ecg_test_page.demo_toggle.isChecked():
-                self.stop_demo_data()
-                self.start_demo_data()
-                return
+            try:
+                if self.demo_timer:
+                    base_interval = 33  # ~30 FPS base
+                    timer_interval = max(10, int(base_interval / self.speed_multiplier))
+                    self.demo_timer.setInterval(timer_interval)
+                # Keep dashboard calculator in sync with effective sampling rate
+                # CSV demo base is 150Hz; synthetic is handled in start_synthetic_demo
+                self.samples_per_second = int(150 * self.speed_multiplier)
+                self._set_demo_sampling_rate(self.samples_per_second)
+            except Exception:
+                pass
         
         for i, lead in enumerate(self.ecg_test_page.leads):
             if i < len(self.ecg_test_page.data_lines) and i < len(self.ecg_test_page.data):
@@ -210,11 +273,14 @@ class DemoManager:
                     gain = 1.0
                 centered *= gain
 
-                # Wave speed → horizontal time scaling
-                wave_speed = float(self.ecg_test_page.settings_manager.get_wave_speed())  # 12.5 / 25 / 50
+                # Target about 4 peaks (≈4 seconds at 60 BPM) in view regardless of speed
                 display_len = 1000  # keep grid resolution constant
-                scale = max(0.4, min(2.5, 25.0 / max(1e-6, wave_speed)))  # 12.5→2.0, 25→1.0, 50→0.5 (clamped)
-                window_len = max(10, int(display_len * scale))
+                desired_seconds = 4.0
+                try:
+                    effective_fs = float(self.samples_per_second) if self.samples_per_second else 250.0
+                except Exception:
+                    effective_fs = 250.0
+                window_len = int(max(100, min(len(lead_data), effective_fs * desired_seconds)))
                 src = np.asarray(centered[-window_len:])
                 if src.size < 2:
                     resampled = np.zeros(display_len)
@@ -240,6 +306,23 @@ class DemoManager:
 
     def start_synthetic_demo(self):
         """Stream synthetic ECG-like waves when CSV is unavailable."""
+        # Ensure any previous demo resources are stopped before starting new
+        try:
+            self._stop_event.set()
+            if self.demo_thread and self.demo_thread.is_alive():
+                self.demo_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        finally:
+            self._stop_event.clear()
+            self.demo_thread = None
+            try:
+                if self.demo_timer:
+                    self.demo_timer.stop()
+                    self.demo_timer.deleteLater()
+            except Exception:
+                pass
+            self.demo_timer = None
         # Initialize buffers
         for i in range(len(self.ecg_test_page.data)):
             self.ecg_test_page.data[i] = np.zeros(self.ecg_test_page.buffer_size)
@@ -259,12 +342,11 @@ class DemoManager:
             gain = 1.0
 
         # Background thread to stream samples
-        running_flag = True
 
         def stream():
             t = 0.0
             dt = 1.0 / fs
-            while self.ecg_test_page.demo_toggle.isChecked():
+            while (not self._stop_event.is_set()) and self._running_demo:
                 # Simple synthetic lead II heartbeat shape using summed gaussians
                 # Base heartbeat
                 phase = (t % rr) / rr
@@ -282,23 +364,28 @@ class DemoManager:
                 # Update all leads with simple variations
                 for li in range(len(self.ecg_test_page.data)):
                     val = sample * (0.8 + 0.4 * np.sin(two_pi * (li + 1) * 0.03 * t))
-                    self.ecg_test_page.data[li] = np.roll(self.ecg_test_page.data[li], -1)
-                    self.ecg_test_page.data[li][-1] = val
+                    with self._lock:
+                        self.ecg_test_page.data[li] = np.roll(self.ecg_test_page.data[li], -1)
+                        self.ecg_test_page.data[li][-1] = val
 
                 # Respect wave speed for visual pacing
                 delay = (1.0 / fs) / max(0.5, self.speed_multiplier)
                 time.sleep(delay)
                 t += dt
 
-        self.demo_thread = threading.Thread(target=stream, daemon=True)
+        self.demo_thread = threading.Thread(target=stream, name="ECGDemoSynthThread", daemon=True)
         self.demo_thread.start()
 
         # Timer to draw plots
-        self.demo_timer = QTimer()
+        self.demo_timer = QTimer(self.ecg_test_page)
         self.demo_timer.timeout.connect(self.update_demo_plots)
-        base_interval = 20  # ms
+        base_interval = 33  # ~30 FPS base
         timer_interval = int(base_interval / max(0.5, self.speed_multiplier))
         self.demo_timer.start(max(10, timer_interval))
+
+        # Effective sampling for synthetic: fs scaled by speed multiplier (min 0.5x)
+        self.samples_per_second = int(fs * max(0.5, self.speed_multiplier))
+        self._set_demo_sampling_rate(self.samples_per_second)
         print("🚀 Synthetic demo started (CSV missing)")
     
     def _calculate_demo_intervals(self):
@@ -306,9 +393,11 @@ class DemoManager:
         try:
             # Get Lead II data for interval calculations (Lead II is index 1)
             if len(self.ecg_test_page.data) > 1:
-                lead2_data = self.ecg_test_page.data[1]  # Lead II is at index 1
-                lead_I_data = self.ecg_test_page.data[0]  # Lead I is at index 0
-                lead_aVF_data = self.ecg_test_page.data[5]  # Lead aVF is at index 5
+                # Copy under lock to avoid race with writer thread
+                with self._lock:
+                    lead2_data = np.copy(self.ecg_test_page.data[1])  # Lead II
+                    lead_I_data = np.copy(self.ecg_test_page.data[0])  # Lead I
+                    lead_aVF_data = np.copy(self.ecg_test_page.data[5])  # Lead aVF
                 
                 if len(lead2_data) > 100:  # Need enough data for calculations
                     # Use adjusted sampling rate based on wave speed
@@ -365,20 +454,48 @@ class DemoManager:
                         qrs_axis = calculate_qrs_axis(lead_I_data, lead_aVF_data, r_peaks)
                         st_segment = calculate_st_segment(lead2_data, r_peaks, fs=sampling_rate)
                         
-                        # Update dashboard with demo intervals
-                        self.ecg_test_page.dashboard_callback({
-                            'Heart_Rate': heart_rate,
-                            'PR': pr_interval,
-                            'QRS': qrs_duration,
-                            'QTc': qtc_interval,
-                            'QRS_axis': qrs_axis,
-                            'ST': st_segment
-                        })
+                        # Prepare safe ST value (numeric or descriptive text)
+                        try:
+                            if isinstance(st_segment, (int, float, np.floating)):
+                                st_out = int(round(float(st_segment)))
+                            elif isinstance(st_segment, str):
+                                st_out = st_segment
+                            else:
+                                st_out = None
+                        except Exception:
+                            st_out = None
+
+                        # Initialize fixed demo metrics once, then keep constant
+                        if self._demo_fixed_metrics is None:
+                            try:
+                                fixed_hr = 60
+                                fixed_pr = int(round(pr_interval)) if pr_interval is not None else 160
+                                fixed_qrs = int(round(qrs_duration)) if qrs_duration is not None else 90
+                                fixed_qtc = int(round(qtc_interval)) if (qtc_interval is not None and qtc_interval >= 0) else 400
+                                fixed_axis = qrs_axis if qrs_axis is not None else "0°"
+                                fixed_st = st_out if st_out is not None else "Isoelectric"
+                            except Exception:
+                                fixed_hr, fixed_pr, fixed_qrs, fixed_qtc, fixed_axis, fixed_st = 60, 160, 90, 400, "0°", "Isoelectric"
+                            self._demo_fixed_metrics = {
+                                'Heart_Rate': fixed_hr,
+                                'PR': fixed_pr,
+                                'QRS': fixed_qrs,
+                                'QTc': fixed_qtc,
+                                'QRS_axis': fixed_axis,
+                                'ST': fixed_st
+                            }
+
+                        # Always send fixed metrics in demo mode
+                        payload = dict(self._demo_fixed_metrics)
+                        try:
+                            self.ecg_test_page.dashboard_callback(payload)
+                        except Exception as cb_err:
+                            print(f"❌ Error updating dashboard from demo: {cb_err}")
                         
                         # Fixed print statement to handle None values
-                        pr_str = f"{pr_interval:.1f}" if pr_interval is not None else "N/A"
-                        qrs_str = f"{qrs_duration:.1f}" if qrs_duration is not None else "N/A"
-                        hr_str = f"{heart_rate:.1f}" if heart_rate is not None else "N/A"
+                        pr_str = f"{self._demo_fixed_metrics['PR']} ms" if self._demo_fixed_metrics else "N/A"
+                        qrs_str = f"{self._demo_fixed_metrics['QRS']} ms" if self._demo_fixed_metrics else "N/A"
+                        hr_str = f"{self._demo_fixed_metrics['Heart_Rate']} bpm" if self._demo_fixed_metrics else "N/A"
                         
                         print(f"📈 Demo intervals updated: HR={hr_str}, PR={pr_str}, QRS={qrs_str}")
                         
@@ -458,21 +575,49 @@ class DemoManager:
     
     def stop_demo_data(self):
         """Stop demo data generation"""
-        if hasattr(self, 'demo_timer') and self.demo_timer:
-            self.demo_timer.stop()
-            print("⏹️ Demo timer stopped")
-        
-        if hasattr(self, 'demo_thread') and self.demo_thread:
-            # Clear demo data - data is a list of numpy arrays
-            for i in range(len(self.ecg_test_page.data)):
-                self.ecg_test_page.data[i] = np.zeros(self.ecg_test_page.buffer_size)
-            
-            # Clear all plots
-            for line in self.ecg_test_page.data_lines:
-                line.setData(np.zeros(self.ecg_test_page.buffer_size))
-            
+        self._running_demo = False
+        # Signal thread to stop and join
+        try:
+            self._stop_event.set()
+            if self.demo_thread and self.demo_thread.is_alive():
+                self.demo_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        finally:
+            self.demo_thread = None
+
+        # Stop and delete timer
+        try:
+            if self.demo_timer:
+                self.demo_timer.stop()
+                self.demo_timer.deleteLater()
+                print("⏹️ Demo timer stopped")
+        except Exception:
+            pass
+        finally:
+            self.demo_timer = None
+
+        # Clear demo data and plots safely
+        try:
+            with self._lock:
+                for i in range(len(self.ecg_test_page.data)):
+                    self.ecg_test_page.data[i] = np.zeros(self.ecg_test_page.buffer_size)
+                for line in self.ecg_test_page.data_lines:
+                    line.setData(np.zeros(self.ecg_test_page.buffer_size))
             print("🧹 Demo data cleared and plots reset")
-        
+        except Exception:
+            pass
+
         # Clear heart rate smoothing data
         self.demo_heart_rates.clear()
         print("✅ Demo mode stopped successfully")
+
+    def _on_page_destroyed(self):
+        """Safely stop background activity when the owning page is destroyed."""
+        try:
+            self._running_demo = False
+            self._stop_event.set()
+            if self.demo_thread and self.demo_thread.is_alive():
+                self.demo_thread.join(timeout=0.5)
+        except Exception:
+            pass

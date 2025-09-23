@@ -5,28 +5,161 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, Image, PageBreak
 )
 import os
+import matplotlib.pyplot as plt  #  ADD THIS IMPORT
+import matplotlib
+import numpy as np
 
+# Set matplotlib to use non-interactive backend
+matplotlib.use('Agg')
+
+def create_ecg_grid_with_waveform(ecg_data, lead_name, width=6, height=2):
+    """
+    Create ECG graph with pink grid background and dark ECG waveform
+    Returns: matplotlib figure with pink ECG grid background
+    """
+    # Create figure with pink background
+    fig, ax = plt.subplots(figsize=(width, height), facecolor='#ffe6e6', frameon=True)
+    
+    # STEP 1: Create pink ECG grid background
+    # ECG grid colors (even lighter pink/red like medical ECG paper)
+    light_grid_color = '#ffeeee'  # Even lighter pink for minor grid lines (was #ffe0e0)
+    major_grid_color = '#ffe0e0'  # Even lighter pink for major grid lines (was #ffcccc)
+    bg_color = '#ffe6e6'  # Very light pink background
+    
+    # Set both figure and axes background to pink
+    fig.patch.set_facecolor(bg_color)  # Figure background pink
+    ax.set_facecolor(bg_color)         # Axes background pink
+    
+    # STEP 2: Draw pink ECG grid lines
+    # Minor grid lines (1mm equivalent spacing) - LIGHT PINK
+    minor_spacing_x = width / 60  # 60 minor divisions across width
+    minor_spacing_y = height / 20  # 20 minor divisions across height
+    
+    # Draw vertical minor pink grid lines
+    for i in range(61):
+        x_pos = i * minor_spacing_x
+        ax.axvline(x=x_pos, color=light_grid_color, linewidth=0.2, alpha=0.4)  # Further reduced linewidth and alpha
+    
+    # Draw horizontal minor pink grid lines
+    for i in range(21):
+        y_pos = i * minor_spacing_y
+        ax.axhline(y=y_pos, color=light_grid_color, linewidth=0.2, alpha=0.4)  # Further reduced linewidth and alpha
+    
+    # Major grid lines (5mm equivalent spacing) - DARKER PINK
+    major_spacing_x = width / 12  # 12 major divisions across width
+    major_spacing_y = height / 4   # 4 major divisions across height
+    
+    # Draw vertical major pink grid lines
+    for i in range(13):
+        x_pos = i * major_spacing_x
+        ax.axvline(x=x_pos, color=major_grid_color, linewidth=0.4, alpha=0.5)  # Further reduced linewidth and alpha
+    
+    # Draw horizontal major pink grid lines
+    for i in range(5):
+        y_pos = i * major_spacing_y
+        ax.axhline(y=y_pos, color=major_grid_color, linewidth=0.4, alpha=0.5)  # Further reduced linewidth and alpha
+    
+    # STEP 3: Plot DARK ECG waveform on top of pink grid
+    if ecg_data is not None and len(ecg_data) > 0:
+        # Scale ECG data to fit in the grid
+        t = np.linspace(0, width, len(ecg_data))
+        # Normalize ECG data to fit in height with some margin
+        if np.max(ecg_data) != np.min(ecg_data):
+            ecg_normalized = ((ecg_data - np.min(ecg_data)) / (np.max(ecg_data) - np.min(ecg_data))) * (height * 0.8) + (height * 0.1)
+        else:
+            ecg_normalized = np.full_like(ecg_data, height / 2)
+        
+        # DARK ECG LINE - clearly visible on pink grid
+        ax.plot(t, ecg_normalized, color='#000000', linewidth=2.8, solid_capstyle='round', alpha=0.9)
+    # REMOVE ENTIRE else BLOCK - just comment it out or delete lines 78-96
+    
+    # STEP 4: Set axis limits to match grid
+    ax.set_xlim(0, width)
+    ax.set_ylim(0, height)
+    
+    # STEP 5: Remove axis elements but keep the pink grid background
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel('')
+    ax.set_ylabel('')
+    ax.set_title('')
+    
+    return fig
+
+from reportlab.graphics.shapes import Drawing, Group, Line, Rect
+from reportlab.graphics.charts.lineplots import LinePlot
+from reportlab.lib.units import mm
+import numpy as np
+
+def create_reportlab_ecg_drawing(lead_name, width=460, height=45):
+    """
+    Create ECG drawing using ReportLab (NO matplotlib - NO white background issues)
+    Returns: ReportLab Drawing with guaranteed pink background
+    """
+    drawing = Drawing(width, height)
+    
+    # STEP 1: Create solid pink background rectangle
+    bg_color = colors.HexColor("#ffe6e6")  # Light pink background
+    bg_rect = Rect(0, 0, width, height, fillColor=bg_color, strokeColor=None)
+    drawing.add(bg_rect)
+    
+    # STEP 2: Draw pink ECG grid lines (even lighter colors)
+    light_grid_color = colors.HexColor("#ffeeee")  # Even lighter pink (was #ffe0e0)
+    major_grid_color = colors.HexColor("#ffe0e0")   # Even lighter pink (was #ffcccc)
+    
+    # Minor grid lines (1mm spacing equivalent)
+    minor_spacing_x = width / 60  # 60 divisions across width
+    minor_spacing_y = height / 20  # 20 divisions across height
+    
+    # Vertical minor grid lines
+    for i in range(61):
+        x_pos = i * minor_spacing_x
+        line = Line(x_pos, 0, x_pos, height, strokeColor=light_grid_color, strokeWidth=0.15)  # Further reduced strokeWidth
+        drawing.add(line)
+    
+    # Horizontal minor grid lines
+    for i in range(21):
+        y_pos = i * minor_spacing_y
+        line = Line(0, y_pos, width, y_pos, strokeColor=light_grid_color, strokeWidth=0.15)  # Further reduced strokeWidth
+        drawing.add(line)
+    
+    # Major grid lines (5mm spacing equivalent)
+    major_spacing_x = width / 12  # 12 divisions across width
+    major_spacing_y = height / 4   # 4 divisions across height
+    
+    # Vertical major grid lines
+    for i in range(13):
+        x_pos = i * major_spacing_x
+        line = Line(x_pos, 0, x_pos, height, strokeColor=major_grid_color, strokeWidth=0.3)  # Further reduced strokeWidth
+        drawing.add(line)
+    
+    # Horizontal major grid lines
+    for i in range(5):
+        y_pos = i * major_spacing_y
+        line = Line(0, y_pos, width, y_pos, strokeColor=major_grid_color, strokeWidth=0.3)  # Further reduced strokeWidth
+        drawing.add(line)
+    
+    # REMOVE ENTIRE "STEP 3: Draw ECG waveform as series of lines" section (lines ~166-214)
+    
+    return drawing
 
 def capture_real_ecg_graphs_from_dashboard(dashboard_instance=None, ecg_test_page=None):
     """
-    Capture real ECG graphs from dashboard/twelve_lead_test
-    Returns: dict with lead image paths
+    Capture REAL ECG data from the live test page and create drawings
+    Returns: dict with ReportLab Drawing objects containing REAL ECG data
     """
-    lead_img_paths = {}
+    lead_drawings = {}
     
-    # Get current directory path
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.join(current_dir, '..', '..')
-    project_root = os.path.abspath(project_root)
-    
-    print(" Capturing real ECG graphs from dashboard...")
+    print(" Capturing REAL ECG data from live test page...")
     
     # Get lead sequence from settings
     from utils.settings_manager import SettingsManager
     settings_manager = SettingsManager()
     lead_sequence = settings_manager.get_setting("lead_sequence", "Standard")
     
-    # Define lead orders based on sequence
+    # Define lead orders based on sequence 
     LEAD_SEQUENCES = {
         "Standard": ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"],
         "Cabrera": ["aVL", "I", "-aVR", "II", "aVF", "III", "V1", "V2", "V3", "V4", "V5", "V6"]
@@ -35,190 +168,227 @@ def capture_real_ecg_graphs_from_dashboard(dashboard_instance=None, ecg_test_pag
     # Use the appropriate sequence for REPORT ONLY
     ordered_leads = LEAD_SEQUENCES.get(lead_sequence, LEAD_SEQUENCES["Standard"])
     
-    # Method 1: Get from ECGTestPage (twelve_lead_test.py)
-    if ecg_test_page and hasattr(ecg_test_page, 'figures'):
-        print(" Found ECGTestPage with figures")
-        print(f" Number of figures: {len(ecg_test_page.figures)}")
+    # Map lead names to indices
+    lead_to_index = {
+        "I": 0, "II": 1, "III": 2, "aVR": 3, "aVL": 4, "aVF": 5,
+        "V1": 6, "V2": 7, "V3": 8, "V4": 9, "V5": 10, "V6": 11
+    }
+    
+    # Try to get REAL ECG data from the test page
+    real_ecg_data = {}
+    if ecg_test_page and hasattr(ecg_test_page, 'data'):
         
-        for i, lead in enumerate(ordered_leads):
-            print(f" Processing lead {i+1}/12: {lead}")
-            try:
-                # Map Cabrera sequence to actual display sequence
-                if lead == "-aVR":
-                    actual_lead = "aVR"  # Use aVR for -aVR
-                    print(f"  Mapped -aVR to aVR")
-                else:
-                    actual_lead = lead
-                
-                # Get figure from ECGTestPage using original sequence
-                original_sequence = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
-                if actual_lead in original_sequence:
-                    idx = original_sequence.index(actual_lead)
-                    print(f"  Found {actual_lead} at index {idx}")
-                    if idx < len(ecg_test_page.figures):
-                        fig = ecg_test_page.figures[idx]
-                        print(f"  Got figure for {actual_lead}")
-                        
-                        # DYNAMIC: Invert the signal for -aVR (real-time data)
-                        if lead == "-aVR":
-                            print(f"  Inverting signal for -aVR")
-                            for ax in fig.get_axes():
-                                for line in ax.get_lines():
-                                    y_data = line.get_ydata()
-                                    line.set_ydata(-y_data)  # Real-time inversion
-                        
-                        # Create safe filename for -aVR
-                        if lead == "-aVR":
-                            safe_filename = "lead_neg_aVR.png"  # Use safe filename
-                        else:
-                            safe_filename = f"lead_{lead}.png"
-                        
-                        # Save to project root directory
-                        img_path = os.path.join(project_root, safe_filename)
-                        print(f"  Saving to: {img_path}")
-                        
-                        fig.savefig(img_path, 
-                                  bbox_inches='tight',
-                                  pad_inches=0.05,
-                                  dpi=200,
-                                  facecolor='none',
-                                  edgecolor='none',
-                                  transparent=True)
-                        
-                        # Store with original lead name as key, but safe filename as value
-                        lead_img_paths[lead] = img_path
-                        
-                        if lead == "-aVR":
-                            print(f" ✓ Captured Lead {lead} (inverted aVR): {img_path}")
-                        else:
-                            print(f" ✓ Captured Lead {lead}: {img_path}")
-                    else:
-                        print(f"  Index {idx} out of range for figures (len={len(ecg_test_page.figures)})")
-                else:
-                    print(f"  {actual_lead} not found in original sequence")
-                
-            except Exception as e:
-                print(f" ✗ Error capturing Lead {lead}: {e}")
-                import traceback
-                traceback.print_exc()
-    
-    # Method 2: Get from ECGTestPage canvases
-    elif ecg_test_page and hasattr(ecg_test_page, 'canvases'):
-        print(" Found ECGTestPage with canvases")
-        
-        for i, lead in enumerate(ordered_leads):
-            try:
-                # Map Cabrera sequence to actual display sequence
-                if lead == "-aVR":
-                    actual_lead = "aVR"  # Use aVR for -aVR
-                else:
-                    actual_lead = lead
-                
-                # Get figure from ECGTestPage using original sequence
-                original_sequence = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
-                if actual_lead in original_sequence:
-                    idx = original_sequence.index(actual_lead)
-                    if idx < len(ecg_test_page.canvases):
-                        canvas = ecg_test_page.canvases[idx]
-                        fig = canvas.figure
-                        
-                        # Invert the signal (multiply by -1)
-                        for ax in fig.get_axes():
-                            for line in ax.get_lines():
-                                y_data = line.get_ydata()
-                                line.set_ydata(-y_data)  # Invert the signal
-                        
-                        # Save to project root directory
-                        img_path = os.path.join(project_root, f"lead_{lead}.png")
-                        fig.savefig(img_path, 
-                                  bbox_inches='tight',
-                                  pad_inches=0.05,
-                                  dpi=200,
-                                  facecolor='none',
-                                  edgecolor='none',
-                                  transparent=True)
-                        lead_img_paths[lead] = img_path
-                        
-                        print(f" Captured Lead {lead} (inverted aVR): {img_path}")
-                        
-            except Exception as e:
-                print(f" Error capturing Lead {lead}: {e}")
-    
-    # Method 3: Get from Lead12BlackPage (recording.py)
-    elif dashboard_instance and hasattr(dashboard_instance, 'lead12_page'):
-        print(" Found Lead12BlackPage")
-        lead12_page = dashboard_instance.lead12_page
-        
-        if hasattr(lead12_page, 'canvases') and hasattr(lead12_page, 'lead_names'):
-            for i, lead in enumerate(lead12_page.lead_names):
-                try:
-                    if i < len(lead12_page.canvases):
-                        canvas = lead12_page.canvases[i]
-                        fig = canvas.figure
-                        
-                        # Save to project root directory
-                        img_path = os.path.join(project_root, f"lead_{lead}.png")
-                        fig.savefig(img_path, 
-                                  bbox_inches='tight',
-                                  pad_inches=0.05,
-                                  dpi=200,
-                                  facecolor='none',        # TRANSPARENT background
-                                  edgecolor='none',
-                                  transparent=True)        # ENABLE transparency
-                        lead_img_paths[lead] = img_path
-                        
-                        print(f"Captured Lead {lead}: {img_path}")
-                        
-                except Exception as e:
-                    print(f" Error capturing Lead {lead}: {e}")
-    
-    # Method 4: Try to find active ECG figures globally
-    else:
-        print("earching for active ECG figures...")
-        try:
-            import matplotlib.pyplot as plt
-            
-            # Get all open figures
-            figs = [plt.figure(i) for i in plt.get_fignums()]
-            
-            if len(figs) >= 12:
-                ordered_leads = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
-                
-                for i, lead in enumerate(ordered_leads):
-                    if i < len(figs):
-                        fig = figs[i]
-                        
-                        # Save to project root directory
-                        img_path = os.path.join(project_root, f"lead_{lead}.png")
-                        fig.savefig(img_path, 
-                                  bbox_inches='tight',
-                                  pad_inches=0.05,
-                                  dpi=200,
-                                  facecolor='none',        
-                                  edgecolor='none',
-                                  transparent=True)       
-                        lead_img_paths[lead] = img_path
-                        
-                        print(f" Captured Lead {lead}: {img_path}")
-            else:
-                print(f"  Only found {len(figs)} figures, need 12 for all leads")
-                
-        except Exception as e:
-            print(f" Error searching for figures: {e}")
-    
-    if lead_img_paths:
-        print(f" Successfully captured {len(lead_img_paths)}/12 real ECG graphs!")
-    else:
-        print(" No real ECG graphs found. Using fallback...")
-        # Fallback: try to read from existing files
-        ordered_leads = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
         for lead in ordered_leads:
-            img_path = os.path.join(project_root, f"lead_{lead}.png")
-            if os.path.exists(img_path):
-                lead_img_paths[lead] = img_path
-                print(f" Found existing Lead {lead}: {img_path}")
+            if lead == "-aVR":
+                # For -aVR, we need to invert aVR data
+                if hasattr(ecg_test_page, 'data') and len(ecg_test_page.data) > 3:
+                    avr_data = np.array(ecg_test_page.data[3])  # aVR is at index 3
+                    # MAXIMUM data for 7+ heartbeats - NO LIMITS!
+                    real_ecg_data[lead] = -avr_data[-10000:]  # Last 10000 points (20 seconds = plenty of heartbeats)
+                    print(f" Captured REAL -aVR data: {len(real_ecg_data[lead])} points (MAXIMUM for 7+ heartbeats)")
+            else:
+                lead_index = lead_to_index.get(lead)
+                if lead_index is not None and len(ecg_test_page.data) > lead_index:
+                    # MAXIMUM data for 7+ heartbeats - NO LIMITS!
+                    lead_data = np.array(ecg_test_page.data[lead_index])
+                    if len(lead_data) > 0:
+                        real_ecg_data[lead] = lead_data[-10000:]  # Last 10000 points (20 seconds = plenty of heartbeats)
+                        print(f"📈 Captured REAL {lead} data: {len(real_ecg_data[lead])} points (MAXIMUM for 7+ heartbeats)")
+                    else:
+                        print(f"⚠️ No data found for {lead}")
+                else:
+                    print(f"⚠️ Lead {lead} index not found")
+    else:
+        print("⚠️ No live ECG test page found - using grid only")
     
-    return lead_img_paths
+    # Create ReportLab drawings with REAL data
+    for lead in ordered_leads:
+        try:
+            # Create ReportLab drawing with REAL ECG data
+            drawing = create_reportlab_ecg_drawing_with_real_data(
+                lead, 
+                real_ecg_data.get(lead), 
+                width=460, 
+                height=45
+            )
+            lead_drawings[lead] = drawing
+            
+            if lead in real_ecg_data:
+                print(f"✅ Created drawing with MAXIMUM data for Lead {lead} - showing 7+ heartbeats")
+            else:
+                print(f"Created grid-only drawing for Lead {lead}")
+            
+        except Exception as e:
+            print(f" Error creating drawing for Lead {lead}: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    print(f" Successfully created {len(lead_drawings)}/12 ECG drawings with MAXIMUM heartbeats!")
+    return lead_drawings
+
+def create_reportlab_ecg_drawing_with_real_data(lead_name, ecg_data, width=460, height=45):
+    """
+    Create ECG drawing using ReportLab with REAL ECG data showing MAXIMUM heartbeats
+    Returns: ReportLab Drawing with guaranteed pink background and REAL ECG waveform
+    """
+    drawing = Drawing(width, height)
+    
+    # STEP 1: Create solid pink background rectangle
+    bg_color = colors.HexColor("#ffe6e6")  # Light pink background
+    bg_rect = Rect(0, 0, width, height, fillColor=bg_color, strokeColor=None)
+    drawing.add(bg_rect)
+    
+    # STEP 2: Draw pink ECG grid lines (even lighter colors)
+    light_grid_color = colors.HexColor("#ffeeee")  # Even lighter pink (was #ffe0e0)
+    major_grid_color = colors.HexColor("#ffe0e0")   # Even lighter pink (was #ffcccc)
+    
+    # Minor grid lines (1mm spacing equivalent)
+    minor_spacing_x = width / 60  # 60 divisions across width
+    minor_spacing_y = height / 20  # 20 divisions across height
+    
+    # Vertical minor grid lines
+    for i in range(61):
+        x_pos = i * minor_spacing_x
+        line = Line(x_pos, 0, x_pos, height, strokeColor=light_grid_color, strokeWidth=0.15)  # Further reduced strokeWidth
+        drawing.add(line)
+    
+    # Horizontal minor grid lines
+    for i in range(21):
+        y_pos = i * minor_spacing_y
+        line = Line(0, y_pos, width, y_pos, strokeColor=light_grid_color, strokeWidth=0.15)  # Further reduced strokeWidth
+        drawing.add(line)
+    
+    # Major grid lines (5mm spacing equivalent)
+    major_spacing_x = width / 12  # 12 divisions across width
+    major_spacing_y = height / 4   # 4 divisions across height
+    
+    # Vertical major grid lines
+    for i in range(13):
+        x_pos = i * major_spacing_x
+        line = Line(x_pos, 0, x_pos, height, strokeColor=major_grid_color, strokeWidth=0.3)  # Further reduced strokeWidth
+        drawing.add(line)
+    
+    # Horizontal major grid lines
+    for i in range(5):
+        y_pos = i * major_spacing_y
+        line = Line(0, y_pos, width, y_pos, strokeColor=major_grid_color, strokeWidth=0.3)  # Further reduced strokeWidth
+        drawing.add(line)
+    
+    # STEP 3: Draw ALL AVAILABLE ECG data - NO DOWNSAMPLING, NO LIMITS!
+    if ecg_data is not None and len(ecg_data) > 0:
+        print(f"🎯 Drawing ALL AVAILABLE ECG data for {lead_name}: {len(ecg_data)} points (NO LIMITS)")
+        
+        # SIMPLE APPROACH: Use ALL available data points - NO cutting, NO downsampling
+        # This will show as many heartbeats as possible in the available data
+        
+        # Create time array for ALL the data
+        t = np.linspace(0, width, len(ecg_data))
+        
+        # Scale ECG data to fit in height with MAXIMUM amplitude
+        ecg_min, ecg_max = np.min(ecg_data), np.max(ecg_data)
+        if ecg_max != ecg_min:
+            # Use FULL height for maximum visibility
+            ecg_normalized = ((ecg_data - ecg_min) / (ecg_max - ecg_min)) * (height * 0.95) + (height * 0.025)
+        else:
+            ecg_normalized = np.full_like(ecg_data, height / 2)
+        
+        # Draw ALL ECG data points - NO REDUCTION
+        ecg_color = colors.HexColor("#000000")  # Black ECG line
+        
+        # OPTIMIZED: Draw every point for maximum detail
+        for i in range(len(t) - 1):
+            line = Line(t[i], ecg_normalized[i], 
+                       t[i+1], ecg_normalized[i+1], 
+                       strokeColor=ecg_color, strokeWidth=0.5)
+            drawing.add(line)
+        
+        print(f" Drew ALL {len(ecg_data)} ECG data points for {lead_name} - showing MAXIMUM heartbeats!")
+    else:
+        print(f" No real data available for {lead_name} - showing grid only")
+    
+    return drawing
+
+def create_clean_ecg_image(lead_name, width=6, height=2):
+    """
+    Create COMPLETELY CLEAN ECG image with GUARANTEED pink background
+    NO labels, NO time markers, NO axes, NO white background
+    """
+    # FORCE matplotlib to use proper backend
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    # STEP 1: Create figure with FORCED pink background
+    fig = plt.figure(figsize=(width, height), facecolor='#ffe6e6', frameon=True)
+    
+    # FORCE figure background to pink
+    fig.patch.set_facecolor('#ffe6e6')
+    fig.patch.set_alpha(1.0)  # Full opacity
+    
+    # Create axes with FORCED pink background
+    ax = fig.add_subplot(111)
+    ax.set_facecolor('#ffe6e6')  # FORCE axes background pink
+    ax.patch.set_facecolor('#ffe6e6')  # FORCE axes patch pink
+    ax.patch.set_alpha(1.0)  # Full opacity
+    
+    # STEP 2: Draw pink ECG grid lines OVER pink background (even lighter colors)
+    light_grid_color = '#ffeeee'  # Even lighter pink for minor grid lines (was #ffe0e0)
+    major_grid_color = '#ffe0e0'  # Even lighter pink for major grid lines (was #ffcccc)
+    
+    # Minor grid lines (1mm equivalent spacing)
+    minor_spacing_x = width / 60  # 60 minor divisions
+    minor_spacing_y = height / 20  # 20 minor divisions
+    
+    # Draw vertical minor pink grid lines
+    for i in range(61):
+        x_pos = i * minor_spacing_x
+        ax.axvline(x=x_pos, color=light_grid_color, linewidth=0.2, alpha=0.4)  # Further reduced linewidth and alpha
+    
+    # Draw horizontal minor pink grid lines
+    for i in range(21):
+        y_pos = i * minor_spacing_y
+        ax.axhline(y=y_pos, color=light_grid_color, linewidth=0.2, alpha=0.4)  # Further reduced linewidth and alpha
+    
+    # Major grid lines (5mm equivalent spacing)
+    major_spacing_x = width / 12  # 12 major divisions
+    major_spacing_y = height / 4   # 4 major divisions
+    
+    # Draw vertical major pink grid lines
+    for i in range(13):
+        x_pos = i * major_spacing_x
+        ax.axvline(x=x_pos, color=major_grid_color, linewidth=0.4, alpha=0.5)  # Further reduced linewidth and alpha
+    
+    # Draw horizontal major pink grid lines
+    for i in range(5):
+        y_pos = i * major_spacing_y
+        ax.axhline(y=y_pos, color=major_grid_color, linewidth=0.4, alpha=0.5)  # Further reduced linewidth and alpha
+    
+    # REMOVE ENTIRE "STEP 3: Create realistic ECG waveform" section (lines ~315-356)
+    # REMOVE ENTIRE "STEP 4: Plot DARK ECG line" section
+    
+    # STEP 5: Set limits and remove ALL visual elements except grid
+    ax.set_xlim(0, width)
+    ax.set_ylim(0, height)
+    
+    # COMPLETELY remove ALL spines, ticks, labels
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel('')
+    ax.set_ylabel('')
+    ax.set_title('')
+    ax.axis('off')  # FORCE turn off all axis elements
+    
+    # Remove any text objects
+    for text in ax.texts:
+        text.set_visible(False)
+    
+    # FORCE tight layout with pink background
+    fig.tight_layout(pad=0)
+    
+    return fig
 
 
 def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, dashboard_instance=None, ecg_test_page=None, patient=None):
@@ -237,25 +407,69 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
             "HR_avg": 88,
         }
 
-    # UPDATED: Get real ECG graphs from dashboard instead of sample images
+    #  FORCE DELETE ALL OLD WHITE BACKGROUND IMAGES
     if lead_images is None:
-        print(" Attempting to capture real ECG graphs from dashboard...")
-        lead_images = capture_real_ecg_graphs_from_dashboard(dashboard_instance, ecg_test_page)
+        print("  DELETING ALL OLD WHITE BACKGROUND IMAGES...")
         
-        # If no real graphs found, show error
+        # Get both possible locations
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.join(current_dir, '..', '..')
+        project_root = os.path.abspath(project_root)
+        src_dir = os.path.join(current_dir, '..')
+        
+        leads = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
+        
+        # DELETE from both locations
+        for lead in leads:
+            # Location 1: project root
+            img_path1 = os.path.join(project_root, f"lead_{lead}.png")
+            if os.path.exists(img_path1):
+                os.remove(img_path1)
+                print(f"  Deleted OLD image: {img_path1}")
+            
+            # Location 2: src directory  
+            img_path2 = os.path.join(src_dir, f"lead_{lead}.png")
+            if os.path.exists(img_path2):
+                os.remove(img_path2)
+                print(f"  : {img_path2}")
+        
+        print(" CREATING NEW PINK GRID IMAGES...")
+        
+        # Create NEW pink grid images
+        lead_images = {}
+        for lead in leads:
+            try:
+                # Create pink grid ECG
+                fig = create_ecg_grid_with_waveform(None, lead, width=6, height=2)
+                
+                # Save to project root with pink background
+                img_path = os.path.join(project_root, f"lead_{lead}.png")
+                fig.savefig(img_path, 
+                           dpi=200, 
+                           bbox_inches='tight', 
+                           pad_inches=0.05,
+                           facecolor='#ffe6e6',  # PINK background
+                           edgecolor='none',
+                           format='png')
+                plt.close(fig)
+                
+                lead_images[lead] = img_path
+                print(f" Created NEW PINK GRID image: {img_path}")
+                
+            except Exception as e:
+                print(f" Error creating {lead}: {e}")
+        
         if not lead_images:
-            print(" No real ECG graphs available!")
-            print("Please make sure:")
-            print("   1. ECG test is running on dashboard")
-            print("   2. 12-lead graphs are currently displayed")
-            print("   3. Try generating PDF while ECG is active")
-            return "Error: No real ECG graphs found"
-
+            return "Error: Could not create PINK GRID ECG images"
+    
+    # Get REAL ECG drawings from live test page
+    print(" Capturing REAL ECG data from live test page...")
+    lead_drawings = capture_real_ecg_graphs_from_dashboard(dashboard_instance, ecg_test_page)
+    
     # Get lead sequence from settings
     from utils.settings_manager import SettingsManager
     settings_manager = SettingsManager()
     lead_sequence = settings_manager.get_setting("lead_sequence", "Standard")
-    
     
     # Define lead orders based on sequence
     LEAD_SEQUENCES = {
@@ -297,25 +511,15 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     last_name = patient.get("last_name", "")
     age = patient.get("age", "")
     gender = patient.get("gender", "")
-    test_name = patient.get("test_name", "12 Lead ECG")
+   
     date_time = patient.get("date_time", "")
-    abnormal_report = patient.get("abnormal_report", "N")
-    uId = patient.get("uId", "NA")
-    testId = patient.get("testId", "NA")
-    dataId = patient.get("dataId", "NA")
-
+    
     story.append(Paragraph("<b>Patient Details</b>", styles['Heading3']))
     patient_table = Table([
-        ["Name:", f"{first_name} {last_name}".strip()],
-        ["Age:", f"{age}"],
-        ["Gender:", f"{gender}"],
-        ["Test Name:", f"{test_name}"],
-        ["Date/Time:", f"{date_time}"],
-        ["Abnormal Report:", f"{abnormal_report}"],
-        ["User ID:", f"{uId}"],
-        ["Test ID:", f"{testId}"],
-        ["Data ID:", f"{dataId}"],
-    ], colWidths=[150, 350])
+        ["Name:", f"{first_name} {last_name}".strip(), "Age:", f"{age}", "Gender:", f"{gender}"],
+        ["Date:", f"{date_time.split()[0] if date_time else ''}", "Time:", f"{date_time.split()[1] if len(date_time.split()) > 1 else ''}", "", ""],
+        # ], colWidths=[80, 150, 50, 80, 60, 150])  # Increased all column widths
+            ], colWidths=[70, 130, 40, 70, 50, 140])  # Total width = 500
     patient_table.setStyle(TableStyle([
         ("BOX", (0,0), (-1,-1), 1, colors.black),
         ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
@@ -323,12 +527,12 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         ("ALIGN", (0,0), (-1,-1), "LEFT"),
     ]))
     story.append(patient_table)
-    story.append(Spacer(1, 18))
+    story.append(Spacer(1, 12))  # Reduced from 18
 
     # Report Overview
     story.append(Paragraph("<b>Report Overview</b>", styles['Heading3']))
     overview_data = [
-        ["Total Number of Heartbeats (beats):", data["HR"]],
+        # ["Total Number of Heartbeats (beats):", data["HR"]],
         ["Maximum Heart Rate:", f'{data["HR_max"]} bpm'],
         ["Minimum Heart Rate:", f'{data["HR_min"]} bpm'],
         ["Average Heart Rate:", f'{data["HR_avg"]} bpm'],
@@ -341,11 +545,11 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         ("ALIGN", (0,0), (-1,-1), "LEFT"),
     ]))
     story.append(table)
-    story.append(Spacer(1, 35))
+    story.append(Spacer(1, 15))  # Reduced from 35
 
     # Observation with 3 parts in ONE table (like in the image)
     story.append(Paragraph("<b>OBSERVATION</b>", styles['Heading3']))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 8))  # Reduced from 10
     
     # Create table with 3 columns: Interval Names, Observed Values, Standard Range
     obs_headers = ["Interval Names", "Observed Values", "Standard Range"]
@@ -366,7 +570,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     COLUMN_WIDTH_1 = 165  
     COLUMN_WIDTH_2 = 165 
     COLUMN_WIDTH_3 = 165
-    ROW_HEIGHT = 25       
+    ROW_HEIGHT = 15       
     HEADER_HEIGHT = 30    
     
     # Create table with 3 columns and custom dimensions
@@ -386,8 +590,8 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 1), (-1, -1), 10),
         ("ALIGN", (0, 1), (-1, -1), "CENTER"),
-        ("BOTTOMPADDING", (0, 1), (-1, -1), ROW_HEIGHT//2),
-        ("TOPPADDING", (0, 1), (-1, -1), ROW_HEIGHT//2),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 5),  # Reduced padding
+        ("TOPPADDING", (0, 1), (-1, -1), 5),     # Reduced padding
         
         # Grid and borders
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
@@ -395,44 +599,13 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     ]))
     
     story.append(obs_table)
-    story.append(Spacer(1, 18))
+    story.append(Spacer(1, 12))  # Reduced from 18
 
-    story.append(PageBreak())
-
-    # Supraventricular Rhythm
-    story.append(Paragraph("<b>Supraventricular Rhythm</b>", styles['Heading3']))
-    supra_data = [
-        ["Total Number of Supraventricular Heart Beats:", "362"],
-        ["Number of PAC:", "340"],
-        ["Couplet of PAC:", "3"],
-        ["Supraventricular Bigeminy:", "0"],
-        ["Supraventricular Trigeminy:", "19"],
-        ["Supraventricular Tachycardia:", "3"],
-        ["Maximum Duration of Tachycardia (s):", "2.00"],
-    ]
-    supra_table = Table(supra_data, colWidths=[350, 150])
-    supra_table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.grey)]))
-    story.append(supra_table)
-    story.append(Spacer(1, 18))
-
-    # Ventricular Rhythm
-    story.append(Paragraph("<b>Ventricular Rhythm</b>", styles['Heading3']))
-    vent_data = [
-        ["Total Number of Ventricular Heart Beats:", "0"],
-        ["Number of PVC:", "0"],
-        ["Couplet of PVC:", "0"],
-        ["Ventricular Bigeminy:", "0"],
-        ["Ventricular Trigeminy:", "0"],
-        ["Ventricular Tachycardia:", "0"],
-    ]
-    vent_table = Table(vent_data, colWidths=[350, 150])
-    vent_table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.grey)]))
-    story.append(vent_table)
-    story.append(Spacer(1, 18))
+   
 
     # Conclusion in table format
     story.append(Paragraph("<b>ECG Report Conclusion</b>", styles['Heading3']))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 8))   # Reduced from 10
     
     # Create conclusion table
     conclusion_headers = ["S.No.", "Conclusion"]
@@ -456,8 +629,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d9e6f2")),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, 0), 11),
-        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"), 
         ("TOPPADDING", (0, 0), (-1, 0), 10),
         
         # Data rows styling
@@ -474,99 +646,13 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     ]))
     
     story.append(conclusion_table)
-    story.append(Spacer(1, 18))
+    story.append(Spacer(1, 12))  # Reduced from 18
 
-    # Notes
-    story.append(Paragraph("<b>Note:</b>", styles['Heading3']))
-    story.append(Paragraph("1. Due to sporadic nature of ECG events, each result may differ.", styles['Normal']))
-    story.append(Paragraph("2. Results are for reference only, not for clinical diagnosis.", styles['Normal']))
+    # ADD PageBreak HERE to send patient details to Page 2
     story.append(PageBreak())
 
-    #
-    # STEP 1: Add this specific ECG grid pattern as full page background
-    # Create ECG grid pattern programmatically (exactly like your image)
-    from reportlab.graphics.shapes import Drawing, Group, Line, Rect
-    from reportlab.lib.units import mm
-
-    def create_ecg_grid_background():
-        """Create the exact ECG grid pattern from your image"""
-        # A4 page dimensions
-        width = 520  # A4 width in points (adjusted for margins)
-        height = 760  # A4 height in points (adjusted for margins)
-        
-        drawing = Drawing(width, height)
-        
-        # ECG grid colors (pink/red like medical ECG paper)
-        light_grid_color = colors.HexColor("#ffcccc")  # Light pink for minor grid
-        major_grid_color = colors.HexColor("#ff9999")  # Darker pink for major grid
-        
-        # Create background rectangle
-        bg_rect = Rect(0, 0, width, height, fillColor=colors.HexColor("#ffe6e6"), strokeColor=None)
-        drawing.add(bg_rect)
-        
-        # Minor grid lines (1mm spacing)
-        minor_spacing = 1 * mm
-        
-        # Vertical minor grid lines
-        x = 0
-        while x <= width:
-            line = Line(x, 0, x, height, strokeColor=light_grid_color, strokeWidth=0.3)
-            drawing.add(line)
-            x += minor_spacing
-        
-        # Horizontal minor grid lines  
-        y = 0
-        while y <= height:
-            line = Line(0, y, width, y, strokeColor=light_grid_color, strokeWidth=0.3)
-            drawing.add(line)
-            y += minor_spacing
-        
-        # Major grid lines (5mm spacing) - thicker and darker
-        major_spacing = 5 * mm
-        
-        # Vertical major grid lines
-        x = 0
-        while x <= width:
-            line = Line(x, 0, x, height, strokeColor=major_grid_color, strokeWidth=0.8)
-            drawing.add(line)
-            x += major_spacing
-        
-        # Horizontal major grid lines
-        y = 0  
-        while y <= height:
-            line = Line(0, y, width, y, strokeColor=major_grid_color, strokeWidth=0.8)
-            drawing.add(line)
-            y += major_spacing
-        
-        return drawing
-
-    # Add the ECG grid background to page 3
-    ecg_grid_bg = create_ecg_grid_background()
-    story.append(ecg_grid_bg)
-
-    # Move content back to top to overlay on background
-    story.append(Spacer(1, -740))
-
-
-    print(" Added custom ECG grid background pattern to Page 3")
-
-
-    title_style = ParagraphStyle(
-            'ECGTitle',
-            fontSize=18,
-            textColor=colors.HexColor("#000000"),
-            spaceAfter=15,
-            alignment=1,  # center
-            bold=True
-    )
-
-    story.append(Paragraph("<b>12-Lead Electrocardiogram</b>", title_style))
-
-
-
-
-
-    # Patient header on Page 3 (only Name, Age, Gender, Date/Time)
+    # Now these patient details will be on Page 2 top
+    # Patient header on Page 2 (Name, Age, Gender, Date/Time)
     if patient is None:
         patient = {}
     first_name = patient.get("first_name", "")
@@ -576,50 +662,94 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     gender = patient.get("gender", "")
     date_time_str = patient.get("date_time", "")
 
+    # Make text clearly visible on pink background WITHOUT any background
     mini_label_style = ParagraphStyle(
         'MiniLabel',
-        fontSize=10,
+        fontSize=12,  # Increased from 10
         fontName='Helvetica-Bold',
         textColor=colors.black,
-        leading=12,
+        leading=14,
+        # NO background - let pink grid show through completely
+        # backColor=colors.white,  # REMOVE this line completely
     )
+
     mini_value_style = ParagraphStyle(
         'MiniValue',
-        fontSize=10,
+        fontSize=12,  # Increased from 10
         fontName='Helvetica',
         textColor=colors.black,
-        leading=12,
+        leading=14,
+        # NO background - let pink grid show through completely
+        # backColor=colors.white,  # REMOVE this line completely
     )
 
-    # 2-column compact table over the grid (transparent)
-    patient_header_table = Table([
-        [Paragraph("<b>Name:</b> ", mini_label_style), Paragraph(full_name, mini_value_style),
-        Paragraph("<b>Age:</b> ", mini_label_style), Paragraph(str(age), mini_value_style)],
-        [Paragraph("<b>Gender:</b> ", mini_label_style), Paragraph(gender, mini_value_style),
-        Paragraph("<b>Date/Time:</b> ", mini_label_style), Paragraph(date_time_str, mini_value_style)],
-    ], colWidths=[55, 185, 60, 160])
+    # REMOVE the table approach and use Canvas positioning instead
+    # Comment out or delete the left_patient_table code
 
-    patient_header_table.setStyle(TableStyle([
-        ("ALIGN", (0,0), (-1,-1), "LEFT"),
-        ("VALIGN", (0,0), (-1,-1), "TOP"),
-        ("LEFTPADDING", (0,0), (-1,-1), 2),
-        ("RIGHTPADDING", (0,0), (-1,-1), 2),
-        ("TOPPADDING", (0,0), (-1,-1), 1),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 1),
-    ]))
-    story.append(patient_header_table)
+    # Replace with individual paragraphs positioned left
+    from reportlab.platypus import KeepTogether
+
+    # Create left-aligned style (less bold, like doctor name)
+    left_info_style = ParagraphStyle(
+        'LeftInfoStyle',
+        fontSize=10,  # Same as doctor name
+        fontName='Helvetica',  # Regular font, not bold
+        textColor=colors.black,
+        alignment=0,  # Left alignment
+        leftIndent=0,  # No indentation
+        spaceAfter=6,  # Increased from 2 to 6 for more gap
+    )
+
+    # Add Name, Age, Gender as separate left-aligned paragraphs with more gap
+    # story.append(Paragraph(f"Name: {full_name}", left_info_style))
+    # story.append(Paragraph(f"Age: {age}", left_info_style))
+    # story.append(Paragraph(f"Gender: {gender}", left_info_style))
+    # story.append(Spacer(1, 15))  # Increased from 8 to 15 for more gap after Gender
+
+    # RIGHT SIDE: Date/Time positioned for right side
+    # Date/Time in column format (right aligned at top)
+    date_time_style = ParagraphStyle(
+        'DateTimeStyle',
+        fontSize=12,
+        fontName='Helvetica',  # Remove Bold
+        textColor=colors.black,
+        alignment=2,  # Right alignment
+        spaceAfter=4,  # Reduced spacing
+    )
+
+    # Split date and time into separate paragraphs for column format
+    if date_time_str:
+        date_part = date_time_str.split()[0] if date_time_str.split() else ""
+        time_part = date_time_str.split()[1] if len(date_time_str.split()) > 1 else ""
+        
+        # Date paragraph
+        date_para = Paragraph(f"Date: {date_part}", date_time_style)
+        story.append(date_para)
+        
+        # Time paragraph  
+        time_para = Paragraph(f"Time: {time_part}", date_time_style)
+        story.append(time_para)
+    else:
+        # Fallback if no date_time_str
+        date_para = Paragraph("Date: ____", date_time_style)
+        story.append(date_para)
+        time_para = Paragraph("Time: ____", date_time_style)
+        story.append(time_para)
+    
     story.append(Spacer(1, 8))
 
-   
+    
     # Vital Parameters Header (completely transparent)
     vital_style = ParagraphStyle(
         'VitalStyle',
-        fontSize=11,
+        fontSize=12,  # Increased from 11
         fontName='Helvetica-Bold',
         textColor=colors.black,
         spaceAfter=15,
-        alignment=1  # center
-        # No backColor - completely transparent
+        alignment=1,  # center
+        # Add white background 
+        # for better visibility on pink grid
+        backColor=colors.white,
     )
 
     # Vital Parameters Header (on top of background)
@@ -641,91 +771,263 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     QTc = data.get('QTc', 260)
     ST = data.get('ST', 114)
 
-    vital_header = f"HR: {HR} bpm    PR: {PR} ms    QRS: {QRS} ms    QT: {QT} ms    QTc: {QTc} ms    ST: {ST} ms"
-    story.append(Paragraph(vital_header, vital_style))
-    story.append(Spacer(1, 15))
+    # Create 3-column vital parameters table (left positioned, normal text)
+    vital_table_style = ParagraphStyle(
+        'VitalTableStyle',
+        fontSize=10,  # Same as Name, Age, Gender
+        fontName='Helvetica',  # Normal font, not bold
+        textColor=colors.black,
+        alignment=0,  # Left alignment instead of center
+    )
 
-    # VERTICAL ECG STRIPS LAYOUT (12 strips vertically over grid background)
-    successful_graphs = 0
+    # Create table data: 2 rows × 2 columns (as per your changes)
+    vital_table_data = [
+        [f"HR : {HR} bpm", f"QT: {QT} ms"],
+        [f"PR : {PR} ms", f"QTc: {QTc} ms"],
+        [f"QRS: {QRS} ms", f"ST: {ST} ms"]
+    ]
 
-    print(" Creating 12 vertical ECG strips over grid background...")
+    # Create vital parameters table with MORE LEFT and TOP positioning
+    vital_params_table = Table(vital_table_data, colWidths=[100, 100])  # Even smaller widths for more left
 
-    # Create all 12 vertical strips
-    all_strips_data = []
-
-    for lead in lead_order:
-        if lead in lead_images and os.path.exists(lead_images[lead]):
-            try:
-                # Lead label (NO background - completely transparent)
-                lead_label = Paragraph(
-                    f"<b>{lead}</b>", 
-                    ParagraphStyle(
-                        'VerticalLeadStyle',
-                        fontSize=10,
-                        fontName='Helvetica-Bold',
-                        textColor=colors.black,
-                        alignment=0,  # left
-                        spaceAfter=0,
-                        leftIndent=10
-                        # backColor COMPLETELY REMOVED
-                    )
-                )
-                
-                # ECG strip image (full width for vertical layout)
-                strip_img = Image(lead_images[lead], width=460, height=45)
-                
-                # Create row with label and strip
-                strip_row = [lead_label, strip_img]
-                all_strips_data.append(strip_row)
-                
-                successful_graphs += 1
-                print(f" Added vertical strip for Lead {lead} ({successful_graphs}/12)")
-                
-            except Exception as e:
-                print(f" Error with Lead {lead}: {e}")
-                error_row = [
-                    Paragraph(f"<b>{lead}</b>",      
-                             ParagraphStyle('ErrorStyle')),  
-                    Paragraph("Error loading", 
-                             ParagraphStyle('ErrorStyle'))   
-                ]
-                all_strips_data.append(error_row)
-        else:
-            print(f" Missing Lead {lead}")
-            missing_row = [
-                Paragraph(f"<b>{lead}</b>",          
-                         ParagraphStyle('MissingStyle')),  # No backColor
-                Paragraph("Not available", 
-                         ParagraphStyle('MissingStyle'))   # No backColor
-            ]
-            all_strips_data.append(missing_row)
-
-    # Create single vertical table with all 12 strips (transparent to show grid)
-    vertical_strips_table = Table(all_strips_data, colWidths=[60, 460], rowHeights=[50] * len(all_strips_data))
-
-    # Style the vertical strips table (transparent to show ECG grid)
-    vertical_strips_table.setStyle(TableStyle([
-        
-        
-        # Subtle borders only
-        ("LINEBELOW", (0, 0), (-1, -1), 0.2, colors.HexColor("#ff999950")),  # Very light lines
-        
-        # Cell alignment
-        ("ALIGN", (0, 0), (0, -1), "LEFT"),     # Lead labels left aligned
-        ("ALIGN", (1, 0), (1, -1), "CENTER"),   # Strips centered
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), 
-        
-        # Minimal padding
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5), 
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    vital_params_table.setStyle(TableStyle([
+        # Transparent background to show pink grid
+        ("BACKGROUND", (0, 0), (-1, -1), colors.Color(0, 0, 0, alpha=0)),
+        ("GRID", (0, 0), (-1, -1), 0, colors.Color(0, 0, 0, alpha=0)),
+        ("BOX", (0, 0), (-1, -1), 0, colors.Color(0, 0, 0, alpha=0)),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),  # Left align
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),  # Normal font
+        ("FONTSIZE", (0, 0), (-1, -1), 10),  # Same size as Name, Age, Gender
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),  # Zero left padding for extreme left
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),  # Zero right padding too
+        ("TOPPADDING", (0, 0), (-1, -1), 0),   # Zero top padding for top shift
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
     ]))
 
-    story.append(vertical_strips_table)
-    story.append(Spacer(1, 15))
+    # Add vital parameters at VERY TOP of Page 2
+    # story.append(vital_params_table)  # REMOVE this line
+    # story.append(Spacer(1, 3))        # REMOVE this line
 
-    print(f" 12 vertical ECG strips over custom grid background: {successful_graphs}/12 leads")
+    #  CREATE SINGLE MASSIVE DRAWING with ALL ECG content (NO individual drawings)
+    print("Creating SINGLE drawing with all ECG content...")
+    
+    # Single drawing dimensions
+    total_width = 520   # Full page width
+    total_height = 600  # Height for all content
+    
+    # Create ONE master drawing
+    master_drawing = Drawing(total_width, total_height)
+    
+    # STEP 1: NO background rectangle - let page pink grid show through
+    
+    # STEP 2: Define positions for all 12 leads based on selected sequence (SHIFTED DOWN)
+    y_positions = [500, 450, 400, 350, 300, 250, 200, 150, 100, 50, 0, -50]
+    lead_positions = []
+    
+    for i, lead in enumerate(lead_order):
+        lead_positions.append({
+            "lead": lead, 
+            "x": 60, 
+            "y": y_positions[i]
+        })
+    
+    print(f" Using lead positions in {lead_sequence} sequence: {[pos['lead'] for pos in lead_positions]}")
+    
+    # STEP 3: Draw ALL ECG content directly in master drawing
+    successful_graphs = 0
+    
+    for pos_info in lead_positions:
+        lead = pos_info["lead"]
+        x_pos = pos_info["x"]
+        y_pos = pos_info["y"]
+        
+        try:
+            # STEP 3A: Add lead label directly
+            from reportlab.graphics.shapes import String
+            lead_label = String(10, y_pos + 20, f"{lead}", 
+                              fontSize=10, fontName="Helvetica-Bold", fillColor=colors.black)
+            master_drawing.add(lead_label)
+            
+            # STEP 3B: Get ALL AVAILABLE REAL ECG data for this lead
+            real_data_available = False
+            if ecg_test_page and hasattr(ecg_test_page, 'data'):
+                lead_to_index = {
+                    "I": 0, "II": 1, "III": 2, "aVR": 3, "aVL": 4, "aVF": 5,
+                    "V1": 6, "V2": 7, "V3": 8, "V4": 9, "V5": 10, "V6": 11
+                }
+                
+                if lead == "-aVR" and len(ecg_test_page.data) > 3:
+                    # For -aVR, use ALL available inverted aVR data
+                    real_ecg_data = -np.array(ecg_test_page.data[3][-8000:])  # Last 8000 points = 16 seconds
+                    real_data_available = True
+                    print(f"🔄 Using ALL available -aVR data: {len(real_ecg_data)} points (16+ seconds)")
+                elif lead in lead_to_index and len(ecg_test_page.data) > lead_to_index[lead]:
+                    # Get ALL available real data for this lead
+                    lead_index = lead_to_index[lead]
+                    if len(ecg_test_page.data[lead_index]) > 0:
+                        real_ecg_data = np.array(ecg_test_page.data[lead_index][-8000:])  # Last 8000 points = 16 seconds
+                        real_data_available = True
+                        print(f"🔄 Using ALL available {lead} data: {len(real_ecg_data)} points (16+ seconds)")
+            
+            if real_data_available and len(real_ecg_data) > 0:
+                # Draw ALL REAL ECG data - NO LIMITS
+                ecg_width = 460
+                ecg_height = 45
+                
+                # Create time array for ALL data
+                t = np.linspace(x_pos, x_pos + ecg_width, len(real_ecg_data))
+                
+                # Scale ALL real ECG signal to fit in height
+                ecg_min, ecg_max = np.min(real_ecg_data), np.max(real_ecg_data)
+                if ecg_max != ecg_min:
+                    ecg_normalized = ((real_ecg_data - ecg_min) / (ecg_max - ecg_min)) * (ecg_height * 0.95) + y_pos + (ecg_height * 0.025)
+                else:
+                    ecg_normalized = np.full_like(real_ecg_data, y_pos + ecg_height / 2)
+                
+                # Draw ALL REAL ECG data points
+                from reportlab.graphics.shapes import Path
+                ecg_path = Path(fillColor=None, 
+                               strokeColor=colors.HexColor("#000000"), 
+                               strokeWidth=0.4,  # Thinner line for more data points
+                               strokeLineCap=1,
+                               strokeLineJoin=1)
+                
+                # Start path
+                ecg_path.moveTo(t[0], ecg_normalized[0])
+                
+                # Add ALL points - NO REDUCTION
+                for i in range(1, len(t)):
+                    ecg_path.lineTo(t[i], ecg_normalized[i])
+                
+                # Add path to master drawing
+                master_drawing.add(ecg_path)
+                
+                print(f"✅ Added ALL REAL ECG data for Lead {lead}: {len(real_ecg_data)} points (MAXIMUM heartbeats)")
+            else:
+                print(f"📋 No real data for Lead {lead} - showing grid only")
+            
+            successful_graphs += 1
+            
+        except Exception as e:
+            print(f"❌ Error adding Lead {lead}: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # STEP 4: Add Patient Info and Vital Parameters to master drawing
+    from reportlab.graphics.shapes import String
+
+    # LEFT SIDE: Patient Info (SHIFTED DOWN - lower positions)
+    patient_name_label = String(-30, 620, f"Name: {full_name}", 
+                           fontSize=10, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(patient_name_label)
+
+    patient_age_label = String(-30, 600, f"Age: {age}", 
+                          fontSize=10, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(patient_age_label)
+
+    patient_gender_label = String(-30, 580, f"Gender: {gender}", 
+                             fontSize=10, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(patient_gender_label)
+
+    # RIGHT SIDE: Vital Parameters at SAME LEVEL as patient info (SHIFTED DOWN)
+    # Get real ECG data from dashboard
+    HR = data.get('HR_avg', 70)
+    PR = data.get('PR', 192) 
+    QRS = data.get('QRS', 93)
+    QT = data.get('QT', 354)
+    QTc = data.get('QTc', 260)
+    ST = data.get('ST', 114)
+
+    # Add vital parameters SHIFTED LEFT at same Y levels with REDUCED GAP
+    hr_label = String(180, 620, f"HR  : {HR} bpm", 
+                     fontSize=10, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(hr_label)
+
+    qt_label = String(280, 620, f"QT  : {QT} ms", 
+                     fontSize=10, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(qt_label)
+
+    pr_label = String(180, 600, f"PR  : {PR} ms", 
+                     fontSize=10, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(pr_label)
+
+    qtc_label = String(280, 600, f"QTc: {QTc} ms", 
+                      fontSize=10, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(qtc_label)
+
+    qrs_label = String(180, 580, f"QRS: {QRS} ms", 
+                      fontSize=10, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(qrs_label)
+
+    st_label = String(280, 580, f"ST  : {ST} ms", 
+                     fontSize=10, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(st_label)
+
+    # Doctor Name (BOTTOM LEFT - existing code)
+    
+
+    # Doctor Name (BOTTOM LEFT - SHIFTED FURTHER DOWN) - KEEP AS IS
+    doctor_name_label = String(-30, -100, "Doctor Name: __", 
+                              fontSize=10, fontName="Helvetica-Bold", fillColor=colors.black)
+    master_drawing.add(doctor_name_label)
+
+    # Doctor Signature (BOTTOM LEFT - SHIFTED FURTHER DOWN) - KEEP AS IS
+    doctor_sign_label = String(-30, -120, "Doctor Sign: __", 
+                              fontSize=10, fontName="Helvetica-Bold", fillColor=colors.black)
+    master_drawing.add(doctor_sign_label)
+
+    # Add RIGHT-SIDE Conclusion Box (moved to the right)
+    conclusion_y_start = -90  # Higher up (was -120)
+    
+    # Create a rectangular box for conclusions (shifted right) - SAME POSITION
+    from reportlab.graphics.shapes import Rect
+    conclusion_box = Rect(200, conclusion_y_start - 35, 300, 50,  # x shifted from 50 to 200
+                         fillColor=None, strokeColor=colors.black, strokeWidth=1)
+    master_drawing.add(conclusion_box)
+    
+    # CENTERED and STYLISH "Conclusion" header
+    # Box center: 200 + (300/2) = 350, so text should be centered around 350
+    conclusion_header = String(350, conclusion_y_start + 8, "✦ CONCLUSION ✦", 
+                              fontSize=11, fontName="Helvetica-Bold", 
+                              fillColor=colors.HexColor("#2c3e50"),
+                              textAnchor="middle")  # This centers the text
+    master_drawing.add(conclusion_header)
+    
+    # Column 1: First 3 conclusions (left side of box)
+    conc1 = String(210, conclusion_y_start - 5, "1. Sinus Rhythm", 
+                   fontSize=8, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(conc1)
+    
+    conc2 = String(210, conclusion_y_start - 15, "2. PAC (Premature)", 
+                   fontSize=8, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(conc2)
+    
+    conc3 = String(210, conclusion_y_start - 25, "3. Couplet of PAC", 
+                   fontSize=8, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(conc3)
+    
+    # Column 2: Next 3 conclusions (right side of box)
+    conc4 = String(350, conclusion_y_start - 5, "4. PAC Trigeminy", 
+                   fontSize=8, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(conc4)
+    
+    conc5 = String(350, conclusion_y_start - 15, "5. Supraventricular", 
+                   fontSize=8, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(conc5)
+    
+    conc6 = String(350, conclusion_y_start - 25, "6. Normal ECG", 
+                   fontSize=8, fontName="Helvetica", fillColor=colors.black)
+    master_drawing.add(conc6)
+
+    print(" Added Patient Info, Vital Parameters, Conclusions in Box, and Doctor Name/Signature to ECG grid")
+    
+    # STEP 5: Add SINGLE master drawing to story (NO containers)
+    story.append(master_drawing)
+    story.append(Spacer(1, 15))
+    
+    print(f" Added SINGLE master drawing with {successful_graphs}/12 ECG leads (ZERO containers)!")
 
     # Measurement info (NO background)
     measurement_style = ParagraphStyle(
@@ -738,7 +1040,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
 
 
     # Summary (NO background)
-    summary_style = ParagraphStyle(
+    summary_style = ParagraphStyle( 
         'SummaryStyle',
         fontSize=10,
         textColor=colors.HexColor("#000000"),
@@ -748,9 +1050,61 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     # summary_para = Paragraph(f"ECG Report: {successful_graphs}/12 leads displayed", summary_style)
     # story.append(summary_para)
 
-    # Helper: draw logo on every page (top-left inside margins)
-    def _draw_logo(canvas, doc):
+    # Helper: draw logo on every page AND ALIGNED pink grid background on Page 2
+    def _draw_logo_and_footer(canvas, doc):
         import os
+        from reportlab.lib.units import mm
+        
+        # STEP 1: Draw FULL PAGE pink ECG grid background on Page 2 (ECG graphs page)
+        if canvas.getPageNumber() == 2:  # Changed from 3 to 2
+            page_width, page_height = canvas._pagesize
+            
+            # Fill entire page with pink background
+            canvas.setFillColor(colors.HexColor("#ffe6e6"))
+            canvas.rect(0, 0, page_width, page_height, fill=1, stroke=0)
+            
+            # ECG grid colors - SAME as existing
+            light_grid_color = colors.HexColor("#ffcccc")  # Light pink minor grid
+            
+            major_grid_color = colors.HexColor("#ff9999")   # Darker pink major grid
+            
+            # Draw minor grid lines (1mm spacing) - FULL PAGE
+            canvas.setStrokeColor(light_grid_color)
+            canvas.setLineWidth(0.3)
+            
+            minor_spacing = 1 * mm
+            
+            # Vertical minor lines - full page
+            x = 0
+            while x <= page_width:
+                canvas.line(x, 0, x, page_height)
+                x += minor_spacing
+            
+            # Horizontal minor lines - full page
+            y = 0
+            while y <= page_height:
+                canvas.line(0, y, page_width, y)
+                y += minor_spacing
+            
+            # Draw major grid lines (5mm spacing) - FULL PAGE
+            canvas.setStrokeColor(major_grid_color)
+            canvas.setLineWidth(0.8)
+            
+            major_spacing = 5 * mm
+            
+            # Vertical major lines - full page
+            x = 0
+            while x <= page_width:
+                canvas.line(x, 0, x, page_height)
+                x += major_spacing
+            
+            # Horizontal major lines - full page
+            y = 0
+            while y <= page_height:
+                canvas.line(0, y, page_width, y)
+                y += major_spacing
+        
+        # STEP 2: Draw logo on all pages (existing code)
         # Prefer PNG (ReportLab-friendly); fallback to WebP if PNG missing
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         png_path = os.path.join(base_dir, "assets", "Deckmountimg.png")
@@ -759,18 +1113,15 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
 
         if os.path.exists(logo_path):
             canvas.saveState()
-                        # Different positioning for page 2
-                        # Different positioning for page 2
+            # Different positioning for different pages
             if canvas.getPageNumber() == 2:
-                logo_w, logo_h = 100, 35  # bigger size for page 2
-                x = doc.width + doc.leftMargin - logo_w - 50 
-                y = doc.height + doc.bottomMargin - logo_h - 00  # much more right
-            elif canvas.getPageNumber() == 3:
-                logo_w, logo_h = 120, 40  # bigger size for page 3
-                x = doc.width + doc.leftMargin - logo_w - 50  # more right
-                y = doc.height + doc.bottomMargin - logo_h - 00  # higher up
+                logo_w, logo_h = 120, 40  # bigger size for ECG page
+                # SHIFTED LEFT FROM RIGHT TOP CORNER
+                page_width, page_height = canvas._pagesize
+                x = page_width - logo_w - 35  # Shifted 50 pixels left from right edge
+                y = page_height - logo_h  # Top edge touch
             else:
-                logo_w, logo_h = 100, 28  # normal size for other pages
+                logo_w, logo_h = 120, 40  # normal size for other pages
                 x = doc.width + doc.leftMargin - logo_w
                 y = doc.height + doc.bottomMargin - logo_h  # top positioning
             try:
@@ -779,54 +1130,30 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                 # If WebP unsupported, silently skip
                 pass
             canvas.restoreState()
+        
+        # STEP 3: Add footer with company address on all pages
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(colors.black)  # Ensure text is black on pink background
+        footer_text = "Deckmount Electronic , Plot No. 260, Phase IV, Udyog Vihar, Sector 18, Gurugram, Haryana 122015"
+        # Center the footer text at bottom of page
+        text_width = canvas.stringWidth(footer_text, "Helvetica", 8)
+        x = (doc.width + doc.leftMargin + doc.rightMargin - text_width) / 2
+        y = 20  # 20 points from bottom
+        canvas.drawString(x, y, footer_text)
+        canvas.restoreState()
 
     # Build PDF
-    doc.build(story, onFirstPage=_draw_logo, onLaterPages=_draw_logo)
+    doc.build(story, onFirstPage=_draw_logo_and_footer, onLaterPages=_draw_logo_and_footer)
     print(f"✓ ECG Report generated: {filename}")
 
 
-# BONUS: Add a function to create sample ECG images for testing
-def create_sample_ecg_images():
-    """Create sample ECG images for testing if they don't exist"""
-    import matplotlib.pyplot as plt
-    import numpy as np
-    
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.join(current_dir, '..', '..')
-    project_root = os.path.abspath(project_root)
-    
-    leads = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
-    
-    for lead in leads:
-        img_path = os.path.join(project_root, f"lead_{lead}.png")
-        
-        if not os.path.exists(img_path):
-            # Create a simple ECG-like waveform
-            fig, ax = plt.subplots(figsize=(6, 2))
-            t = np.linspace(0, 2, 1000)
-            
-            # Generate ECG-like signal
-            ecg_signal = np.sin(2 * np.pi * 1.2 * t) + 0.5 * np.sin(2 * np.pi * 5 * t)
-            # Add some spikes for R waves
-            for i in range(2):
-                spike_pos = 0.5 + i * 1.0
-                spike_indices = np.where((t >= spike_pos - 0.05) & (t <= spike_pos + 0.05))
-                ecg_signal[spike_indices] += 2 * np.exp(-((t[spike_indices] - spike_pos) / 0.02) ** 2)
-            
-            ax.plot(t, ecg_signal, 'b-', linewidth=1.5)
-            ax.set_title(f"Lead {lead}")
-            ax.set_ylim(-2, 4)
-            ax.grid(True, alpha=0.3)
-            ax.set_facecolor('white')
-            
-            fig.savefig(img_path, dpi=150, bbox_inches='tight', facecolor='white')
-            plt.close(fig)
-            print(f"Created sample image: {img_path}")
+# REMOVE ENTIRE create_sample_ecg_images function (lines ~1222-1257)
 
-
-if __name__ == "__main__":
-    # Create sample images if they don't exist
-    create_sample_ecg_images()
-    
-    # Generate report
-    generate_ecg_report("test_ecg_report.pdf")
+# REMOVE ENTIRE main execution block (lines ~1260-1265)
+# if __name__ == "__main__":
+#     # Create sample images with transparency (force recreation)
+#     create_sample_ecg_images(force_recreate=True)
+#     
+#     # Generate report
+#     generate_ecg_report("test_ecg_report.pdf")

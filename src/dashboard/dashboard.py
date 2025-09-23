@@ -530,7 +530,34 @@ class Dashboard(QWidget):
         issues_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         issue_layout.addWidget(issues_box)
         
-        grid.addWidget(issue_card, 2, 1, 1, 2)
+        grid.addWidget(issue_card, 2, 1, 1, 1)
+
+        # --- Recent Reports Card ---
+        reports_card = QFrame()
+        reports_card.setStyleSheet(
+            "background: white; border-radius: 16px;"
+        )
+        reports_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        reports_v = QVBoxLayout(reports_card)
+        ttl = QLabel("Recent Reports")
+        ttl.setFont(QFont("Arial", 14, QFont.Bold))
+        ttl.setStyleSheet("color: #ff6600;")
+        reports_v.addWidget(ttl)
+
+        # Scroll area for list
+        self.reports_list_widget = QWidget()
+        self.reports_list_layout = QVBoxLayout(self.reports_list_widget)
+        self.reports_list_layout.setContentsMargins(0,0,0,0)
+        self.reports_list_layout.setSpacing(8)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(180)
+        scroll.setWidget(self.reports_list_widget)
+        reports_v.addWidget(scroll)
+
+        self.refresh_recent_reports_ui()
+
+        grid.addWidget(reports_card, 2, 2, 1, 1)
         
         # --- ECG Monitor Metrics Cards ---
         metrics_card = QFrame()
@@ -641,6 +668,49 @@ class Dashboard(QWidget):
     def open_chatbot_dialog(self):
         dlg = ChatbotDialog(self)
         dlg.exec_()
+
+    def refresh_recent_reports_ui(self):
+        import os, json
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        reports_dir = os.path.join(base_dir, "..", "reports")
+        index_path = os.path.join(reports_dir, "index.json")
+        # Clear
+        while self.reports_list_layout.count():
+            item = self.reports_list_layout.takeAt(0)
+            w = item.widget()
+            if w: w.setParent(None)
+        entries = []
+        if os.path.exists(index_path):
+            try:
+                with open(index_path, 'r') as f:
+                    entries = json.load(f)
+            except Exception:
+                entries = []
+        for e in entries[:10]:
+            row = QHBoxLayout()
+            meta = QLabel(f"{e.get('date','')} {e.get('time','')}  |  {e.get('patient','')}  |  {e.get('title','Report')}")
+            meta.setStyleSheet("color: #333333; font-size: 12px;")
+            row.addWidget(meta, 1)
+            btn = QPushButton("Open")
+            btn.setStyleSheet("background: #ff6600; color: white; border-radius: 8px; padding: 4px 10px; font-weight: bold;")
+            path = os.path.join(reports_dir, e.get('filename',''))
+            btn.clicked.connect(lambda _, p=path: self.open_report_file(p))
+            row.addWidget(btn)
+            cont = QWidget(); cont.setLayout(row)
+            self.reports_list_layout.addWidget(cont)
+        spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.reports_list_layout.addWidget(spacer)
+
+    def open_report_file(self, path):
+        import os, sys, subprocess
+        if not os.path.exists(path):
+            return
+        if sys.platform == 'darwin':
+            subprocess.call(['open', path])
+        elif sys.platform.startswith('linux'):
+            subprocess.call(['xdg-open', path])
+        elif sys.platform.startswith('win'):
+            os.startfile(path)
 
     def is_ecg_active(self):
         """Return True if demo is ON or serial acquisition is running."""
@@ -1273,7 +1343,7 @@ class Dashboard(QWidget):
         if filename:
             try:
                 # Generate the PDF using the simple function from ecg_report_generator
-                generate_ecg_report(filename, ecg_data, lead_img_paths)
+                generate_ecg_report(filename, ecg_data, lead_img_paths, self, self.ecg_test_page)
                 
                 QMessageBox.information(
                     self, 
@@ -1282,7 +1352,50 @@ class Dashboard(QWidget):
                 )
                 
                 print(f" PDF generated: {filename}")
-                
+                # Save a copy inside the app for Recent Reports + update index.json
+                try:
+                    import shutil, json
+                    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+                    reports_dir = os.path.abspath(os.path.join(base_dir, "..", "reports"))
+                    os.makedirs(reports_dir, exist_ok=True)
+                    # Destination filename (keep basename)
+                    dst_basename = os.path.basename(filename)
+                    dst_path = os.path.join(reports_dir, dst_basename)
+                    # Avoid overwrite
+                    if os.path.abspath(filename) != os.path.abspath(dst_path):
+                        counter = 1
+                        base_name, ext = os.path.splitext(dst_basename)
+                        while os.path.exists(dst_path):
+                            dst_basename = f"{base_name}_{counter}{ext}"
+                            dst_path = os.path.join(reports_dir, dst_basename)
+                            counter += 1
+                        shutil.copyfile(filename, dst_path)
+                    # Update index.json (prepend)
+                    index_path = os.path.join(reports_dir, "index.json")
+                    items = []
+                    if os.path.exists(index_path):
+                        try:
+                            with open(index_path, 'r') as f:
+                                items = json.load(f)
+                        except Exception:
+                            items = []
+                    now = datetime.datetime.now()
+                    meta = {
+                        "filename": os.path.basename(dst_path),
+                        "title": "ECG Report",
+                        "patient": "",  # Fill from form if available
+                        "date": now.strftime('%Y-%m-%d'),
+                        "time": now.strftime('%H:%M:%S')
+                    }
+                    items = [meta] + items
+                    items = items[:10]
+                    with open(index_path, 'w') as f:
+                        json.dump(items, f, indent=2)
+                    # Refresh dashboard list
+                    self.refresh_recent_reports_ui()
+                except Exception as idx_err:
+                    print(f" Failed to update Recent Reports index: {idx_err}")
+
             except Exception as e:
                 error_msg = f"Failed to generate PDF: {str(e)}"
                 print(f" {error_msg}")

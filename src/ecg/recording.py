@@ -1191,6 +1191,11 @@ class ECGMenu(QGroupBox):
         # For wave speed and gain, apply immediate visual feedback
         if key in ["wave_speed", "wave_gain"]:
             print(f"Applied {key}: {value}")
+            try:
+                if hasattr(self.parent(), 'ecg_test_page') and self.parent().ecg_test_page:
+                    self.parent().ecg_test_page.update_plots()
+            except Exception as e:
+                print(f"Immediate refresh error: {e}")
 
     def save_working_mode_settings(self):
         
