@@ -728,7 +728,7 @@ class Dashboard(QWidget):
         # Add scroll area to dashboard layout
         dashboard_layout.addWidget(scroll_area)
         
-        # Generate report button removed from dashboard (available in ECG Test page)
+        # Generate Report button is on ECG 12 Lead Test page only (logic preserved in generate_pdf_report method)
         
         # --- ECG Animation Setup ---
         self.ecg_x = np.linspace(0, 2, 500)
