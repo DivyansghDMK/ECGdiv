@@ -5,6 +5,7 @@ from pyparsing import line
 import logging
 import traceback
 from utils.crash_logger import get_crash_logger
+from PyQt5.QtWidgets import QMessageBox
 try:
     import serial
     import serial.tools.list_ports
@@ -195,6 +196,10 @@ class SerialECGReader:
         self.ser = serial.Serial(port, baudrate, timeout=1)
         self.running = False
         self.data_count = 0
+        self.error_count = 0
+        self.consecutive_errors = 0
+        self.last_error_time = 0
+        self.crash_logger = get_crash_logger()
         print(f"🔌 SerialECGReader initialized: Port={port}, Baud={baudrate}")
 
     def start(self):
@@ -253,13 +258,97 @@ class SerialECGReader:
                 print("⏳ No data received (timeout)")
                 
         except Exception as e:
-            print(f"❌ Serial communication error: {e}")
+            self._handle_serial_error(e)
         return None
 
     def close(self):
         print("🔌 Closing serial connection...")
         self.ser.close()
         print("✅ Serial connection closed")
+
+    def _handle_serial_error(self, error):
+        """Handle serial communication errors with alert and logging"""
+        current_time = time.time()
+        self.error_count += 1
+        self.consecutive_errors += 1
+        
+        # Log the error
+        error_msg = f"Serial communication error: {error}"
+        print(f"❌ {error_msg}")
+        
+        # Log to crash logger
+        self.crash_logger.log_error(
+            message=error_msg,
+            exception=error,
+            category="SERIAL_ERROR"
+        )
+        
+        # Show alert if consecutive errors exceed threshold
+        if self.consecutive_errors >= 5 and (current_time - self.last_error_time) > 10:
+            self._show_serial_error_alert(error)
+            self.last_error_time = current_time
+            self.consecutive_errors = 0  # Reset counter after showing alert
+    
+    def _show_serial_error_alert(self, error):
+        """Show alert dialog for serial communication errors"""
+        try:
+            # Get user details from main application
+            user_details = getattr(self, 'user_details', {})
+            username = user_details.get('full_name', 'Unknown User')
+            phone = user_details.get('phone', 'N/A')
+            email = user_details.get('email', 'N/A')
+            serial_id = user_details.get('serial_id', 'N/A')
+            
+            # Create detailed error message
+            error_details = f"""
+Serial Communication Error Detected!
+
+Error: {str(error)}
+User: {username}
+Phone: {phone}
+Email: {email}
+Serial ID: {serial_id}
+Machine Serial: {self.crash_logger.machine_serial_id or 'N/A'}
+Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
+
+This error has been logged and an email notification will be sent to the support team.
+            """
+            
+            # Show alert dialog
+            msg_box = QMessageBox()
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowTitle("Serial Communication Error")
+            msg_box.setText("ECG Device Connection Lost")
+            msg_box.setDetailedText(error_details)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.exec_()
+            
+            # Send email notification
+            self._send_error_email(error, user_details)
+            
+        except Exception as e:
+            print(f"❌ Error showing serial error alert: {e}")
+    
+    def _send_error_email(self, error, user_details):
+        """Send email notification for serial errors"""
+        try:
+            # Create error data for email
+            error_data = {
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'error_type': 'Serial Communication Error',
+                'error_message': str(error),
+                'user_details': user_details,
+                'machine_serial': self.crash_logger.machine_serial_id or 'N/A',
+                'consecutive_errors': self.consecutive_errors,
+                'total_errors': self.error_count
+            }
+            
+            # Send email using crash logger
+            self.crash_logger._send_crash_email(error_data)
+            print("📧 Serial error email notification sent")
+            
+        except Exception as e:
+            print(f"❌ Error sending serial error email: {e}")
 
 class LiveLeadWindow(QWidget):
     def __init__(self, lead_name, data_source, buffer_size=80, color="#00ff99"):
@@ -432,6 +521,10 @@ class SerialECGReader:
         self.ser = serial.Serial(port, baudrate, timeout=1)
         self.running = False
         self.data_count = 0
+        self.error_count = 0
+        self.consecutive_errors = 0
+        self.last_error_time = 0
+        self.crash_logger = get_crash_logger()
         print(f"🔌 SerialECGReader initialized: Port={port}, Baud={baudrate}")
 
     def start(self):
@@ -490,13 +583,97 @@ class SerialECGReader:
                 print("⏳ No data received (timeout)")
                 
         except Exception as e:
-            print(f"❌ Serial communication error: {e}")
+            self._handle_serial_error(e)
         return None
 
     def close(self):
         print("🔌 Closing serial connection...")
         self.ser.close()
         print("✅ Serial connection closed")
+
+    def _handle_serial_error(self, error):
+        """Handle serial communication errors with alert and logging"""
+        current_time = time.time()
+        self.error_count += 1
+        self.consecutive_errors += 1
+        
+        # Log the error
+        error_msg = f"Serial communication error: {error}"
+        print(f"❌ {error_msg}")
+        
+        # Log to crash logger
+        self.crash_logger.log_error(
+            message=error_msg,
+            exception=error,
+            category="SERIAL_ERROR"
+        )
+        
+        # Show alert if consecutive errors exceed threshold
+        if self.consecutive_errors >= 5 and (current_time - self.last_error_time) > 10:
+            self._show_serial_error_alert(error)
+            self.last_error_time = current_time
+            self.consecutive_errors = 0  # Reset counter after showing alert
+    
+    def _show_serial_error_alert(self, error):
+        """Show alert dialog for serial communication errors"""
+        try:
+            # Get user details from main application
+            user_details = getattr(self, 'user_details', {})
+            username = user_details.get('full_name', 'Unknown User')
+            phone = user_details.get('phone', 'N/A')
+            email = user_details.get('email', 'N/A')
+            serial_id = user_details.get('serial_id', 'N/A')
+            
+            # Create detailed error message
+            error_details = f"""
+Serial Communication Error Detected!
+
+Error: {str(error)}
+User: {username}
+Phone: {phone}
+Email: {email}
+Serial ID: {serial_id}
+Machine Serial: {self.crash_logger.machine_serial_id or 'N/A'}
+Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
+
+This error has been logged and an email notification will be sent to the support team.
+            """
+            
+            # Show alert dialog
+            msg_box = QMessageBox()
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowTitle("Serial Communication Error")
+            msg_box.setText("ECG Device Connection Lost")
+            msg_box.setDetailedText(error_details)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.exec_()
+            
+            # Send email notification
+            self._send_error_email(error, user_details)
+            
+        except Exception as e:
+            print(f"❌ Error showing serial error alert: {e}")
+    
+    def _send_error_email(self, error, user_details):
+        """Send email notification for serial errors"""
+        try:
+            # Create error data for email
+            error_data = {
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'error_type': 'Serial Communication Error',
+                'error_message': str(error),
+                'user_details': user_details,
+                'machine_serial': self.crash_logger.machine_serial_id or 'N/A',
+                'consecutive_errors': self.consecutive_errors,
+                'total_errors': self.error_count
+            }
+            
+            # Send email using crash logger
+            self.crash_logger._send_crash_email(error_data)
+            print("📧 Serial error email notification sent")
+            
+        except Exception as e:
+            print(f"❌ Error sending serial error email: {e}")
 
 class LiveLeadWindow(QWidget):
     def __init__(self, lead_name, data_source, buffer_size=80, color="#00ff99"):
@@ -1377,8 +1554,11 @@ class ECGTestPage(QWidget):
         # Calculate ST Interval
         st_interval = self.calculate_st_interval(lead_ii_data)
         
+        # Calculate QTc Interval (same as ST interval)
+        qtc_interval = self.calculate_qtc_interval(heart_rate, st_interval)
+        
         # Update UI metrics
-        self.update_ecg_metrics_display(heart_rate, pr_interval, qrs_duration, qrs_axis, st_interval)
+        self.update_ecg_metrics_display(heart_rate, pr_interval, qrs_duration, qrs_axis, st_interval, qtc_interval)
 
     def calculate_heart_rate(self, lead_data):
         """Calculate heart rate from Lead II data using R-R intervals"""
@@ -1668,34 +1848,30 @@ class ECGTestPage(QWidget):
             return 100
 
     def calculate_qtc_interval(self, heart_rate, st_interval):
-        """Calculate QTc (Corrected QT interval) using Bazett's formula"""
+        """Calculate QTc - Set same as ST interval to match dashboard"""
         try:
-            if heart_rate and st_interval and heart_rate > 0:
-                # Bazett's formula: QTc = QT / sqrt(RR)
-                # RR interval = 60000 / heart_rate (in ms)
-                rr_interval = 60000 / heart_rate
-                qtc = st_interval * (1000 / np.sqrt(rr_interval))
-                return int(round(qtc))
-            return 400  # Normal QTc fallback
+            if st_interval:
+                return st_interval  # Same value as ST interval
+            return 0  # Fallback
         except:
-            return 400
+            return 0
 
     def update_ecg_metrics_display(self, heart_rate, pr_interval, qrs_duration, qrs_axis, st_interval, qtc_interval=None):
         """Update the ECG metrics display in the UI"""
         try:
             if hasattr(self, 'metric_labels'):
                 if 'heart_rate' in self.metric_labels:
-                    self.metric_labels['heart_rate'].setText(f"{heart_rate} BPM")
+                    self.metric_labels['heart_rate'].setText(f"{heart_rate} ")
                 if 'pr_interval' in self.metric_labels:
-                    self.metric_labels['pr_interval'].setText(f"{pr_interval} ms")
+                    self.metric_labels['pr_interval'].setText(f"{pr_interval} ")
                 if 'qrs_duration' in self.metric_labels:
-                    self.metric_labels['qrs_duration'].setText(f"{qrs_duration} ms")
+                    self.metric_labels['qrs_duration'].setText(f"{qrs_duration} ")
                 if 'qrs_axis' in self.metric_labels:
                     self.metric_labels['qrs_axis'].setText(f"{qrs_axis}°")
                 if 'st_interval' in self.metric_labels:
-                    self.metric_labels['st_interval'].setText(f"{st_interval} ms")
+                    self.metric_labels['st_interval'].setText(f"{st_interval} ")
                 if 'qtc_interval' in self.metric_labels and qtc_interval is not None:
-                    self.metric_labels['qtc_interval'].setText(f"{qtc_interval} ms")
+                    self.metric_labels['qtc_interval'].setText(f"{qtc_interval} ")
         except Exception as e:
             print(f"Error updating ECG metrics: {e}")
 
@@ -1721,6 +1897,10 @@ class ECGTestPage(QWidget):
                     metrics['qrs_axis'] = self.metric_labels['qrs_axis'].text().replace('°', '')
                 if 'st_interval' in self.metric_labels:
                     metrics['st_interval'] = self.metric_labels['st_interval'].text().replace(' ms', '')
+                if 'qtc_interval' in self.metric_labels:
+                    metrics['qtc_interval'] = self.metric_labels['qtc_interval'].text().replace(' ms', '')
+                if 'time_elapsed' in self.metric_labels:
+                    metrics['time_elapsed'] = self.metric_labels['time_elapsed'].text()
             
             # Get sampling rate
             if hasattr(self, 'sampler') and self.sampler.sampling_rate > 0:
@@ -1883,8 +2063,8 @@ class ECGTestPage(QWidget):
         
         for title, value, key, color in metric_info:
             metric_widget = QWidget()
-            # Time and QTc metrics need more width
-            min_w = "120px" if key in ["time_elapsed", "qtc_interval"] else "90px"
+            # Time and QTc metrics need more width to prevent cropping
+            min_w = "140px" if key in ["time_elapsed", "qtc_interval"] else "90px"
             metric_widget.setStyleSheet(f"""
                 QWidget {{
                     background: transparent;
@@ -2022,7 +2202,7 @@ class ECGTestPage(QWidget):
                 elif key == 'st_segment':
                     label.setStyleSheet("color: #ffffff; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
                 elif key == 'time_elapsed':
-                    label.setStyleSheet("color: #ffffff; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
+                    label.setStyleSheet("color: #ffffff; background: transparent; padding: 4px 0px; border: none; font-size: 45px; min-width: 140px;")
                 elif key == 'qtc_interval':
                     label.setStyleSheet("color: #ffffff; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
             
@@ -2059,7 +2239,7 @@ class ECGTestPage(QWidget):
                 elif key == 'st_segment':
                     label.setStyleSheet("color: #2e7d32; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
                 elif key == 'time_elapsed':
-                    label.setStyleSheet("color: #2e7d32; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
+                    label.setStyleSheet("color: #2e7d32; background: transparent; padding: 4px 0px; border: none; font-size: 45px; min-width: 140px;")
                 elif key == 'qtc_interval':
                     label.setStyleSheet("color: #2e7d32; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
             
@@ -2095,7 +2275,7 @@ class ECGTestPage(QWidget):
                 elif key == 'st_segment':
                     label.setStyleSheet("color: #000000; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
                 elif key == 'time_elapsed':
-                    label.setStyleSheet("color: #000000; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
+                    label.setStyleSheet("color: #000000; background: transparent; padding: 4px 0px; border: none; font-size: 45px; min-width: 140px;")
                 elif key == 'qtc_interval':
                     label.setStyleSheet("color: #000000; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
             
@@ -2187,14 +2367,15 @@ class ECGTestPage(QWidget):
     # ------------------------ Ports Configuration Dialog ------------------------
 
     def show_ports_dialog(self):
-        """Show dialog for configuring COM port and baud rate"""
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle("Port Configuration")
-        dialog.setIcon(QMessageBox.Information)
+        """Show simple dialog for configuring COM port and baud rate"""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton
         
-        # Create a custom widget for the dialog
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Port Configuration")
+        dialog.setFixedSize(300, 200)
+        dialog.setModal(True)
+        
+        layout = QVBoxLayout(dialog)
         
         # Port selection
         port_layout = QHBoxLayout()
@@ -2202,19 +2383,13 @@ class ECGTestPage(QWidget):
         port_combo = QComboBox()
         port_combo.addItem("Select Port")
         
-        # Get available ports with better detection
+        # Get available ports
         try:
             ports = serial.tools.list_ports.comports()
-            if not ports:
-                port_combo.addItem("No ports found")
-                print("⚠️ No serial ports detected")
-            else:
-                for port in ports:
-                    port_combo.addItem(port.device)
-                print(f"🔍 Found {len(ports)} serial ports for selection")
+            for port in ports:
+                port_combo.addItem(port.device)
         except Exception as e:
-            port_combo.addItem("Error detecting ports")
-            print(f"❌ Error detecting ports: {e}")
+            print(f"Error listing ports: {e}")
         
         # Set current port if available
         current_port = self.settings_manager.get_serial_port()
@@ -2236,11 +2411,7 @@ class ECGTestPage(QWidget):
         # Set current baud rate if available
         current_baud = self.settings_manager.get_baud_rate()
         if current_baud:
-            index = baud_combo.findText(current_baud)
-            if index >= 0:
-                baud_combo.setCurrentIndex(index)
-            else:
-                baud_combo.setCurrentText(current_baud)
+            baud_combo.setCurrentText(current_baud)
         
         baud_layout.addWidget(baud_combo)
         layout.addLayout(baud_layout)
@@ -2248,38 +2419,76 @@ class ECGTestPage(QWidget):
         # Refresh ports button
         refresh_btn = QPushButton("🔄 Refresh Ports")
         refresh_btn.clicked.connect(lambda: self.refresh_port_combo(port_combo))
+        refresh_btn.setStyleSheet("""
+            QPushButton {
+                background: #ff6600;
+                color: white;
+                border: 2px solid #ff6600;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #e55a00;
+            }
+        """)
         layout.addWidget(refresh_btn)
         
-        # Test connection button
-        test_btn = QPushButton("Test Connection")
-        test_btn.clicked.connect(lambda: self.test_serial_connection(port_combo.currentText(), baud_combo.currentText()))
-        layout.addWidget(test_btn)
+        # Buttons
+        button_layout = QHBoxLayout()
         
-        # Add the widget to the dialog
-        dialog.layout().addWidget(widget, 0, 0, 1, dialog.layout().columnCount())
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background: #6c757d;
+                color: white;
+                border: 2px solid #6c757d;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #5a6268;
+            }
+        """)
+        button_layout.addWidget(cancel_btn)
         
-        # Add buttons
-        save_btn = dialog.addButton("Save", QMessageBox.AcceptRole)
-        cancel_btn = dialog.addButton("Cancel", QMessageBox.RejectRole)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(lambda: self._save_port_settings(dialog, port_combo, baud_combo))
+        save_btn.setStyleSheet("""
+            QPushButton {
+                background: #ff6600;
+                color: white;
+                border: 2px solid #ff6600;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #e55a00;
+            }
+        """)
+        button_layout.addWidget(save_btn)
+        
+        layout.addLayout(button_layout)
         
         # Show dialog
-        result = dialog.exec_()
+        dialog.exec_()
+    
+    def _save_port_settings(self, dialog, port_combo, baud_combo):
+        """Save port settings and close dialog"""
+        selected_port = port_combo.currentText()
+        selected_baud = baud_combo.currentText()
         
-        if result == QMessageBox.AcceptRole:
-            # Save settings
-            selected_port = port_combo.currentText()
-            selected_baud = baud_combo.currentText()
-            
-            if selected_port != "Select Port":
-                self.settings_manager.set_setting("serial_port", selected_port)
-                self.settings_manager.set_setting("baud_rate", selected_baud)
-                print(f"Port settings saved: {selected_port} at {selected_baud} baud")
-                
-                # Show confirmation
-                QMessageBox.information(self, "Settings Saved", 
-                    f"Port configuration saved:\nPort: {selected_port}\nBaud Rate: {selected_baud}")
-            else:
-                QMessageBox.warning(self, "Invalid Selection", "Please select a valid COM port.")
+        if selected_port != "Select Port":
+            self.settings_manager.set_setting("serial_port", selected_port)
+            self.settings_manager.set_setting("baud_rate", selected_baud)
+            print(f"Port settings saved: {selected_port} at {selected_baud} baud")
+            dialog.accept()
+        else:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Invalid Selection", "Please select a valid COM port.")
 
     def refresh_port_combo(self, port_combo):
         """Refresh the port combo box with currently available ports"""
@@ -3263,6 +3472,24 @@ class ECGTestPage(QWidget):
                     self.demo_manager.stop_demo_data()
         except Exception as e:
             print(f"[Start Acquisition] Failed to stop demo before real start: {e}")
+        
+        # Disable demo mode when hardware acquisition starts
+        try:
+            if hasattr(self, 'demo_toggle'):
+                self.demo_toggle.setEnabled(False)
+                self.demo_toggle.setStyleSheet("""
+                    QPushButton {
+                        background: #6c757d;
+                        color: #ffffff;
+                        border: 2px solid #6c757d;
+                        border-radius: 8px;
+                        padding: 4px 8px;
+                        font-size: 10px;
+                    }
+                """)
+                print("🔒 Demo mode disabled (Hardware acquisition active)")
+        except Exception as e:
+            print(f"❌ Error disabling demo mode: {e}")
 
         port = self.settings_manager.get_serial_port()
         baud = self.settings_manager.get_baud_rate()
@@ -3317,6 +3544,9 @@ class ECGTestPage(QWidget):
             
             try:
                 self.serial_reader = SerialECGReader(port, baud_int)
+                # Pass user details to serial reader for error reporting
+                if hasattr(self, 'user_details'):
+                    self.serial_reader.user_details = self.user_details
                 self.serial_reader.start()
                 print("✅ Serial connection established successfully!")
                 
@@ -3329,6 +3559,9 @@ class ECGTestPage(QWidget):
                     print(f"🔄 Trying auto-detected port: {auto_port}")
                     try:
                         self.serial_reader = SerialECGReader(auto_port, baud_int)
+                        # Pass user details to serial reader for error reporting
+                        if hasattr(self, 'user_details'):
+                            self.serial_reader.user_details = self.user_details
                         self.serial_reader.start()
                         
                         # Update settings with the working port
@@ -3470,6 +3703,33 @@ class ECGTestPage(QWidget):
                 'qrs_axis': qrs_axis,
                 'st_interval': st_segment
             })
+        
+        # Re-enable demo mode when hardware acquisition stops
+        try:
+            if hasattr(self, 'demo_toggle'):
+                self.demo_toggle.setEnabled(True)
+                self.demo_toggle.setStyleSheet("""
+                    QPushButton {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                            stop:0 #ffffff, stop:1 #f8f9fa);
+                        color: #1a1a1a;
+                        border: 2px solid #e9ecef;
+                        border-radius: 8px;
+                        padding: 4px 8px;
+                        font-size: 10px;
+                    }
+                    QPushButton:hover {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                            stop:0 #f8f9fa, stop:1 #e9ecef);
+                    }
+                    QPushButton:checked {
+                        background: #28a745;
+                        color: white;
+                    }
+                """)
+                print("🔓 Demo mode enabled (Hardware acquisition stopped)")
+        except Exception as e:
+            print(f"❌ Error enabling demo mode: {e}")
 
     def update_plot(self):
         print(f"[DEBUG] ECGTestPage - update_plot called, serial_reader exists: {self.serial_reader is not None}")
@@ -5033,6 +5293,9 @@ class ECGTestPage(QWidget):
                         break
                 except Exception as e:
                     print(f"❌ Error reading serial data: {e}")
+                    # Handle serial error through the reader's error handling system
+                    if hasattr(self, 'serial_reader') and hasattr(self.serial_reader, '_handle_serial_error'):
+                        self.serial_reader._handle_serial_error(e)
                     break
 
             if lines_processed > 0:
@@ -5089,10 +5352,12 @@ class ECGTestPage(QWidget):
                     except Exception as e:
                         print(f"❌ Error updating plot {i}: {e}")
                         continue
-                try:
-                    self.calculate_ecg_metrics()
-                except Exception as e:
-                    print(f"❌ Error calculating ECG metrics: {e}")
+                # Calculate ECG metrics every 5 updates to reduce computation
+                if self.update_count % 5 == 0:
+                    try:
+                        self.calculate_ecg_metrics()
+                    except Exception as e:
+                        print(f"❌ Error calculating ECG metrics: {e}")
                 try:
                     if hasattr(self, 'heartbeat_counter'):
                         self.heartbeat_counter += 1

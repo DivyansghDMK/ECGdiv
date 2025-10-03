@@ -280,11 +280,12 @@ class Dashboard(QWidget):
         
         header.addStretch()
         
-        self.user_label = QLabel(f"{username or 'User'}\n{role or ''}")
-        self.user_label.setFont(QFont("Arial", 12))
-        self.user_label.setAlignment(Qt.AlignRight)
-        self.user_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        header.addWidget(self.user_label)
+        # User label removed per request
+        # self.user_label = QLabel(f"{username or 'User'}\n{role or ''}")
+        # self.user_label.setFont(QFont("Arial", 12))
+        # self.user_label.setAlignment(Qt.AlignRight)
+        # self.user_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        # header.addWidget(self.user_label)
         
         self.sign_btn = QPushButton("Sign Out")
         self.sign_btn.setStyleSheet("background: #e74c3c; color: white; border-radius: 10px; padding: 4px 18px;")
@@ -717,8 +718,7 @@ class Dashboard(QWidget):
             ("QRS Axis", "0°", "", "qrs_axis"),
             ("ST", "0", "ms", "st_interval"),
             ("QTc", "0", "ms", "qtc_interval"),
-            # ("Time", "00:00", "", "time_elapsed"),  # Commented out
-            # ("Sampling Rate", "0", "Hz", "sampling_rate"),  # Commented out
+            ("Time", "00:00", "", "time_elapsed"),  # Restore time for synchronization
         ]
         
         for title, value, unit, key in metric_info:
@@ -1129,31 +1129,20 @@ class Dashboard(QWidget):
             else:
                 metrics['st_interval'] = 100  # Fallback
             
-            # Calculate QTc (Corrected QT interval) - Bazett's formula
-            if 'heart_rate' in metrics and 'st_interval' in metrics:
-                try:
-                    hr = metrics['heart_rate']
-                    st = metrics['st_interval']
-                    if isinstance(hr, (int, float)) and isinstance(st, (int, float)) and hr > 0:
-                        # QTc = QT / sqrt(RR) where RR = 60/HR
-                        rr_interval = 60000 / hr  # RR interval in ms
-                        qtc = st * (1000 / np.sqrt(rr_interval))  # Bazett's formula
-                        metrics['qtc_interval'] = int(round(qtc))
-                    else:
-                        metrics['qtc_interval'] = 400  # Normal QTc fallback
-                except:
-                    metrics['qtc_interval'] = 400  # Normal QTc fallback
+            # Calculate QTc (Corrected QT interval) - Set same as ST interval
+            if 'st_interval' in metrics:
+                metrics['qtc_interval'] = metrics['st_interval']  # Same value as ST
             else:
-                metrics['qtc_interval'] = 400  # Normal QTc fallback
+                metrics['qtc_interval'] = 0  # Fallback
             
             # metrics['sampling_rate'] = f"{sampling_rate} Hz"  # Commented out
             
-            # Calculate Time Elapsed (simulate based on data length) - Commented out
-            # if len(ecg_signal) > 0:
-            #     time_elapsed_sec = len(ecg_signal) / sampling_rate
-            #     minutes = int(time_elapsed_sec // 60)
-            #     seconds = int(time_elapsed_sec % 60)
-            #     metrics['time_elapsed'] = f"{minutes:02d}:{seconds:02d}"
+            # Calculate Time Elapsed (synchronized with ECG test page)
+            if len(ecg_signal) > 0:
+                time_elapsed_sec = len(ecg_signal) / sampling_rate
+                minutes = int(time_elapsed_sec // 60)
+                seconds = int(time_elapsed_sec % 60)
+                metrics['time_elapsed'] = f"{minutes:02d}:{seconds:02d}"
             
             return metrics
             
@@ -1191,9 +1180,11 @@ class Dashboard(QWidget):
             # Update ST Interval
             if 'st_interval' in ecg_metrics:
                 self.metric_labels['st_interval'].setText(f"{ecg_metrics['st_interval']} ms")
+                # Set QTc to same value as ST for synchronization
+                self.metric_labels['qtc_interval'].setText(f"{ecg_metrics['st_interval']} ms")
             
-            # Update QTc Interval
-            if 'qtc_interval' in ecg_metrics:
+            # Update QTc Interval (fallback if ST not available)
+            if 'qtc_interval' in ecg_metrics and 'st_interval' not in ecg_metrics:
                 self.metric_labels['qtc_interval'].setText(f"{ecg_metrics['qtc_interval']} ms")
             
             # Update Sampling Rate - Commented out
@@ -1302,8 +1293,14 @@ class Dashboard(QWidget):
                     
                     # Calculate and update live ECG metrics using ORIGINAL data with SAME sampling rate
                     try:
-                        ecg_metrics = self.calculate_live_ecg_metrics(original_data, sampling_rate=actual_sampling_rate)
-                        self.update_dashboard_metrics_live(ecg_metrics)
+                        # Use ECG test page's own calculation methods for consistency
+                        if hasattr(self.ecg_test_page, 'calculate_ecg_metrics'):
+                            self.ecg_test_page.calculate_ecg_metrics()
+                        
+                        # Get metrics from ECG test page to ensure synchronization
+                        if hasattr(self.ecg_test_page, 'get_current_metrics'):
+                            ecg_metrics = self.ecg_test_page.get_current_metrics()
+                            self.update_dashboard_metrics_from_ecg()
                         
                         # Calculate and update stress level and HRV
                         self.update_stress_and_hrv(original_data, actual_sampling_rate)
@@ -1449,6 +1446,13 @@ class Dashboard(QWidget):
                     #         self.metric_labels['sampling_rate'].setText(f"{sr_text}")
                     # Time Elapsed metric removed
                     
+                    if 'st_interval' in ecg_metrics:
+                        st_text = ecg_metrics['st_interval']
+                        if st_text and st_text != '--':
+                            self.metric_labels['st_interval'].setText(f"{st_text} ms")
+                            # Set QTc to same value as ST
+                            self.metric_labels['qtc_interval'].setText(f"{st_text} ms")
+                    
                     if 'qtc_interval' in ecg_metrics:
                         qtc_text = ecg_metrics['qtc_interval']
                         if qtc_text and qtc_text != '--':
@@ -1468,9 +1472,9 @@ class Dashboard(QWidget):
                                 # 'sampling_rate': self.metric_labels['sampling_rate'].text() if 'sampling_rate' in self.metric_labels else None,  # Commented out
                                 'qtc_interval': self.metric_labels['qtc_interval'].text() if 'qtc_interval' in self.metric_labels else None,
                             }
-                            # Ensure demo live time is reflected if provided by demo manager - Commented out
-                            # if 'time_elapsed' in ecg_metrics and 'time_elapsed' in self.metric_labels:
-                            #     self.metric_labels['time_elapsed'].setText(ecg_metrics['time_elapsed'])
+                            # Update time elapsed for synchronization
+                            if 'time_elapsed' in ecg_metrics and 'time_elapsed' in self.metric_labels:
+                                self.metric_labels['time_elapsed'].setText(ecg_metrics['time_elapsed'])
 
                             # Snapshot last 5s per lead
                             from utils.session_recorder import SessionRecorder
@@ -1927,10 +1931,12 @@ class Dashboard(QWidget):
                 if not name.strip():
                     QMessageBox.warning(self, "Input Error", "Please enter your name.")
                     return
-                self.user_label.setText(f"{name}\n{role}")
+                # User label removed per request
+                # self.user_label.setText(f"{name}\n{role}")
                 self.sign_btn.setText("Sign Out")
         else:
-            self.user_label.setText("Not signed in")
+            # User label removed per request
+            # self.user_label.setText("Not signed in")
             self.sign_btn.setText("Sign In")
     def update_stress_and_hrv(self, ecg_signal, sampling_rate):
         """Calculate and update stress level and HRV from ECG data"""
@@ -2087,25 +2093,31 @@ class Dashboard(QWidget):
     def update_session_time(self):
         """Update live session timer on both dashboard and ECG test page"""
         try:
-            # Only count if session has started (demo ON or acquisition started)
-            if self.session_start_time is None:
-                time_str = "00:00"
-            else:
+            # Check if ECG is active (demo or hardware acquisition)
+            if self.is_ecg_active():
+                # Auto-start timer if not started yet
+                if self.session_start_time is None:
+                    self.session_start_time = time.time()
+                    print("⏱️ Session timer auto-started")
+                
+                # Calculate elapsed time
                 elapsed = int(time.time() - self.session_start_time)
                 mm = elapsed // 60
                 ss = elapsed % 60
                 time_str = f"{mm:02d}:{ss:02d}"
+            else:
+                # No ECG activity - show 00:00 but don't reset session_start_time
+                time_str = "00:00"
             
-            # Update dashboard metric
+            # Update time on both dashboard and ECG test page for synchronization
             if 'time_elapsed' in self.metric_labels:
                 self.metric_labels['time_elapsed'].setText(time_str)
             
-            # Update ECG test page metric
             if hasattr(self, 'ecg_test_page') and hasattr(self.ecg_test_page, 'metric_labels'):
                 if 'time_elapsed' in self.ecg_test_page.metric_labels:
                     self.ecg_test_page.metric_labels['time_elapsed'].setText(time_str)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️ Error updating session time: {e}")
     
     def start_acquisition_timer(self):
         """Start the session timer when demo or hardware acquisition begins"""
@@ -2114,7 +2126,8 @@ class Dashboard(QWidget):
             print("⏱️ Session timer started")
     
     def handle_sign_out(self):
-        self.user_label.setText("Not signed in")
+        # User label removed per request
+        # self.user_label.setText("Not signed in")
         self.sign_btn.setText("Sign In")
         try:
             recorder = getattr(self, '_session_recorder', None)
