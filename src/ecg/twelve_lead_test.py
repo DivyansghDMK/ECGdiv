@@ -1131,15 +1131,15 @@ class ECGTestPage(QWidget):
         self.stop_btn = QPushButton("Stop")
         self.ports_btn = QPushButton("Ports")
         self.generate_report_btn = QPushButton("Generate Report")
-        self.export_csv_btn = QPushButton("Export as CSV")
-        self.sequential_btn = QPushButton("Show All Leads Sequentially")
+        # self.export_csv_btn = QPushButton("Export as CSV")  # Commented out
+        # self.sequential_btn = QPushButton("Show All Leads Sequentially")  # Commented out
         self.twelve_leads_btn = QPushButton("12:1")
         self.six_leads_btn = QPushButton("6:2")
         self.back_btn = QPushButton("Back")
 
         # Make all buttons responsive and compact
-        for btn in [self.start_btn, self.stop_btn, self.ports_btn, self.generate_report_btn, self.export_csv_btn, 
-                   self.sequential_btn, self.twelve_leads_btn, self.six_leads_btn, self.back_btn]:
+        for btn in [self.start_btn, self.stop_btn, self.ports_btn, self.generate_report_btn, 
+                   self.twelve_leads_btn, self.six_leads_btn, self.back_btn]:
             btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             btn.setMinimumHeight(32)
             btn.setMaximumHeight(36)
@@ -1175,8 +1175,8 @@ class ECGTestPage(QWidget):
         self.stop_btn.setStyleSheet(green_color)
         self.ports_btn.setStyleSheet(green_color)
         self.generate_report_btn.setStyleSheet(green_color)
-        self.export_csv_btn.setStyleSheet(green_color)
-        self.sequential_btn.setStyleSheet(green_color)
+        # self.export_csv_btn.setStyleSheet(green_color)  # Commented out
+        # self.sequential_btn.setStyleSheet(green_color)  # Commented out
         self.twelve_leads_btn.setStyleSheet(green_color)
         self.six_leads_btn.setStyleSheet(green_color)
         self.back_btn.setStyleSheet(green_color)
@@ -1187,8 +1187,8 @@ class ECGTestPage(QWidget):
         btn_layout.addWidget(self.stop_btn)
         btn_layout.addWidget(self.ports_btn)
         btn_layout.addWidget(self.generate_report_btn)
-        btn_layout.addWidget(self.export_csv_btn)
-        btn_layout.addWidget(self.sequential_btn)
+        # btn_layout.addWidget(self.export_csv_btn)  # Commented out
+        # btn_layout.addWidget(self.sequential_btn)  # Commented out
         btn_layout.addWidget(self.twelve_leads_btn)
         btn_layout.addWidget(self.six_leads_btn)
         btn_layout.addWidget(self.back_btn)
@@ -1202,7 +1202,7 @@ class ECGTestPage(QWidget):
         self.stop_btn.setToolTip("Stop current ECG recording")
         self.ports_btn.setToolTip("Configure COM port and baud rate settings")
         self.generate_report_btn.setToolTip("Generate ECG PDF report and add to Recent Reports")
-        self.export_csv_btn.setToolTip("Export ECG data as CSV file")
+        # self.export_csv_btn.setToolTip("Export ECG data as CSV file")  # Commented out
 
         # Add help button
         help_btn = QPushButton("?")
@@ -1223,8 +1223,8 @@ class ECGTestPage(QWidget):
 
         self.ports_btn.clicked.connect(self.show_ports_dialog)
         self.generate_report_btn.clicked.connect(self.generate_pdf_report)
-        self.export_csv_btn.clicked.connect(self.export_csv)
-        self.sequential_btn.clicked.connect(self.show_sequential_view)
+        # self.export_csv_btn.clicked.connect(self.export_csv)  # Commented out
+        # self.sequential_btn.clicked.connect(self.show_sequential_view)  # Commented out
         self.twelve_leads_btn.clicked.connect(self.twelve_leads_overlay)
         self.six_leads_btn.clicked.connect(self.six_leads_overlay)
         self.back_btn.clicked.connect(self.go_back)
@@ -1355,7 +1355,7 @@ class ECGTestPage(QWidget):
             return [0] * 12
 
     def calculate_ecg_metrics(self):
-        """Calculate ECG metrics: Heart Rate, PR Interval, QRS Complex, QRS Axis, ST Interval"""
+        """Calculate ECG metrics: Heart Rate, PR Interval, QRS Complex, QRS Axis, ST Interval, QTc"""
         if len(self.data) < 2:  # Need at least Lead II for analysis
             return
         
@@ -1667,7 +1667,20 @@ class ECGTestPage(QWidget):
         except:
             return 100
 
-    def update_ecg_metrics_display(self, heart_rate, pr_interval, qrs_duration, qrs_axis, st_interval):
+    def calculate_qtc_interval(self, heart_rate, st_interval):
+        """Calculate QTc (Corrected QT interval) using Bazett's formula"""
+        try:
+            if heart_rate and st_interval and heart_rate > 0:
+                # Bazett's formula: QTc = QT / sqrt(RR)
+                # RR interval = 60000 / heart_rate (in ms)
+                rr_interval = 60000 / heart_rate
+                qtc = st_interval * (1000 / np.sqrt(rr_interval))
+                return int(round(qtc))
+            return 400  # Normal QTc fallback
+        except:
+            return 400
+
+    def update_ecg_metrics_display(self, heart_rate, pr_interval, qrs_duration, qrs_axis, st_interval, qtc_interval=None):
         """Update the ECG metrics display in the UI"""
         try:
             if hasattr(self, 'metric_labels'):
@@ -1681,6 +1694,8 @@ class ECGTestPage(QWidget):
                     self.metric_labels['qrs_axis'].setText(f"{qrs_axis}°")
                 if 'st_interval' in self.metric_labels:
                     self.metric_labels['st_interval'].setText(f"{st_interval} ms")
+                if 'qtc_interval' in self.metric_labels and qtc_interval is not None:
+                    self.metric_labels['qtc_interval'].setText(f"{qtc_interval} ms")
         except Exception as e:
             print(f"Error updating ECG metrics: {e}")
 
@@ -1855,13 +1870,14 @@ class ECGTestPage(QWidget):
             ("QRS", "0", "qrs_duration", "#ffffff"),
             ("Axis", "0°", "qrs_axis", "#ffffff"),
             ("ST", "0", "st_segment", "#ffffff"),
+            ("QTc", "0", "qtc_interval", "#ffffff"),
             ("Time", "00:00", "time_elapsed", "#ffffff"),
         ]
         
         for title, value, key, color in metric_info:
             metric_widget = QWidget()
-            # Time metric needs more width
-            min_w = "120px" if key == "time_elapsed" else "90px"
+            # Time and QTc metrics need more width
+            min_w = "120px" if key in ["time_elapsed", "qtc_interval"] else "90px"
             metric_widget.setStyleSheet(f"""
                 QWidget {{
                     background: transparent;
@@ -1959,6 +1975,11 @@ class ECGTestPage(QWidget):
                 f"{int(round(intervals['ST']))}" if isinstance(intervals['ST'], (int, float)) else str(intervals['ST'])
             )
         
+        if 'QTc' in intervals and intervals['QTc'] is not None:
+            self.metric_labels['qtc_interval'].setText(
+                f"{int(round(intervals['QTc']))}" if isinstance(intervals['QTc'], (int, float)) else str(intervals['QTc'])
+            )
+        
         if 'time_elapsed' in self.metric_labels:
             # Time elapsed will be updated separately by a timer
             pass
@@ -1995,10 +2016,12 @@ class ECGTestPage(QWidget):
                     label.setStyleSheet("color: #ffffff; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
                 elif key == 'time_elapsed':
                     label.setStyleSheet("color: #ffffff; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
+                elif key == 'qtc_interval':
+                    label.setStyleSheet("color: #ffffff; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
             
             # Update title colors to green for dark mode
             for child in self.metrics_frame.findChildren(QLabel):
-                if child != self.metric_labels.get('heart_rate') and child != self.metric_labels.get('time_elapsed'):
+                if child != self.metric_labels.get('heart_rate') and child != self.metric_labels.get('time_elapsed') and child != self.metric_labels.get('qtc_interval'):
                     if not any(child == label for label in self.metric_labels.values()):
                         child.setStyleSheet("color: #00ff00; margin-bottom: 5px; border: none;")
                         
@@ -2030,10 +2053,12 @@ class ECGTestPage(QWidget):
                     label.setStyleSheet("color: #2e7d32; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
                 elif key == 'time_elapsed':
                     label.setStyleSheet("color: #2e7d32; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
+                elif key == 'qtc_interval':
+                    label.setStyleSheet("color: #2e7d32; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
             
             # Update title colors to dark green for medical mode
             for child in self.metrics_frame.findChildren(QLabel):
-                if child != self.metric_labels.get('heart_rate') and child != self.metric_labels.get('time_elapsed'):
+                if child != self.metric_labels.get('heart_rate') and child != self.metric_labels.get('time_elapsed') and child != self.metric_labels.get('qtc_interval'):
                     if not any(child == label for label in self.metric_labels.values()):
                         child.setStyleSheet("color: #2e7d32; margin-bottom: 5px; border: none;")
                         
@@ -2064,10 +2089,12 @@ class ECGTestPage(QWidget):
                     label.setStyleSheet("color: #000000; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
                 elif key == 'time_elapsed':
                     label.setStyleSheet("color: #000000; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
+                elif key == 'qtc_interval':
+                    label.setStyleSheet("color: #000000; background: transparent; padding: 4px 0px; border: none; font-size: 50px;")
             
             # Update title colors to dark gray for light mode
             for child in self.metrics_frame.findChildren(QLabel):
-                if child != self.metric_labels.get('heart_rate') and child != self.metric_labels.get('time_elapsed'):
+                if child != self.metric_labels.get('heart_rate') and child != self.metric_labels.get('time_elapsed') and child != self.metric_labels.get('qtc_interval'):
                     if not any(child == label for label in self.metric_labels.values()):
                         child.setStyleSheet("color: #666; margin-bottom: 5px; border: none;")
 
@@ -3268,8 +3295,9 @@ class ECGTestPage(QWidget):
                     if 'qrs_duration' in self.metric_labels: self.metric_labels['qrs_duration'].setText("0")
                     if 'qrs_axis' in self.metric_labels: self.metric_labels['qrs_axis'].setText("0°")
                     if 'st_interval' in self.metric_labels: self.metric_labels['st_interval'].setText("0")
+                    if 'qtc_interval' in self.metric_labels: self.metric_labels['qtc_interval'].setText("0")
                     if 'time_elapsed' in self.metric_labels: self.metric_labels['time_elapsed'].setText("00:00")
-                    if 'sampling_rate' in self.metric_labels: self.metric_labels['sampling_rate'].setText("0 Hz")
+                    # if 'sampling_rate' in self.metric_labels: self.metric_labels['sampling_rate'].setText("0 Hz")  # Commented out
             except Exception as _:
                 pass
             

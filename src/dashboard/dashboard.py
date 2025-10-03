@@ -450,6 +450,8 @@ class Dashboard(QWidget):
         self.ecg_canvas.axes.set_xticks([])
         self.ecg_canvas.axes.set_yticks([])
         self.ecg_canvas.axes.set_title("Lead II", fontsize=10)
+        # Set fixed Y-axis limits to center the ECG wave properly with more range
+        self.ecg_canvas.axes.set_ylim(-300, 300)
         self.ecg_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         ecg_layout.addWidget(self.ecg_canvas)
         
@@ -594,6 +596,18 @@ class Dashboard(QWidget):
         QCalendarWidget QWidget#qt_calendar_navigationbar {
             background: #f7f7f7;
         }
+        QCalendarWidget QWidget#qt_calendar_navigationbar QHBoxLayout {
+            alignment: center;
+        }
+        QCalendarWidget QWidget#qt_calendar_navigationbar QToolButton {
+            min-width: 30px;
+            min-height: 30px;
+        }
+        /* Hide the navigation arrows */
+        QCalendarWidget QWidget#qt_calendar_navigationbar QToolButton[text="◀"],
+        QCalendarWidget QWidget#qt_calendar_navigationbar QToolButton[text="▶"] {
+            display: none;
+        }
     """)
 
         # Highlight last ECG usage date in red
@@ -624,6 +638,10 @@ class Dashboard(QWidget):
         # connect date click/selection to filter reports
         self.schedule_calendar.clicked.connect(self.on_calendar_date_selected)
         self.schedule_calendar.selectionChanged.connect(self.on_calendar_selection_changed)
+        
+        # Connect month/year navigation to custom dropdowns
+        self.schedule_calendar.currentPageChanged.connect(self.on_calendar_page_changed)
+        
         schedule_layout.addWidget(self.schedule_calendar)
         grid.addWidget(schedule_card, 2, 0)
         # --- Conclusion Card ---
@@ -698,8 +716,9 @@ class Dashboard(QWidget):
             ("QRS Complex", "0", "ms", "qrs_duration"),
             ("QRS Axis", "0°", "", "qrs_axis"),
             ("ST", "0", "ms", "st_interval"),
-            ("Time", "00:00", "", "time_elapsed"),
-            ("Sampling Rate", "0", "Hz", "sampling_rate"),
+            ("QTc", "0", "ms", "qtc_interval"),
+            # ("Time", "00:00", "", "time_elapsed"),  # Commented out
+            # ("Sampling Rate", "0", "Hz", "sampling_rate"),  # Commented out
         ]
         
         for title, value, unit, key in metric_info:
@@ -732,7 +751,7 @@ class Dashboard(QWidget):
         
         # --- ECG Animation Setup ---
         self.ecg_x = np.linspace(0, 2, 500)
-        self.ecg_y = 1000 + 200 * np.sin(2 * np.pi * 2 * self.ecg_x) + 50 * np.random.randn(500)
+        self.ecg_y = 150 * np.sin(2 * np.pi * 2 * self.ecg_x) + 30 * np.random.randn(500)  # Smaller amplitude to prevent cropping
         self.ecg_line, = self.ecg_canvas.axes.plot(self.ecg_x, self.ecg_y, color="#ff6600", linewidth=0.5, antialiased=False)
         # Reduce CPU/GPU usage: lower refresh rate slightly and disable frame caching
         self.anim = FuncAnimation(
@@ -820,6 +839,80 @@ class Dashboard(QWidget):
             self.refresh_recent_reports_ui(self.reports_filter_date)
         except Exception:
             pass
+
+    def on_calendar_page_changed(self, year, month):
+        """Handle calendar page change and show month/year dropdowns"""
+        try:
+            # Show month dropdown
+            self.show_month_dropdown(year, month)
+        except Exception as e:
+            print(f"Error in calendar page change: {e}")
+
+    def show_month_dropdown(self, year, month):
+        """Show month selection dropdown"""
+        from PyQt5.QtWidgets import QComboBox, QDialog, QVBoxLayout, QPushButton, QLabel
+        from PyQt5.QtCore import Qt
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Month")
+        dialog.setModal(True)
+        dialog.setFixedSize(200, 300)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Year selection
+        year_label = QLabel("Year:")
+        year_label.setFont(QFont("Arial", 12, QFont.Bold))
+        layout.addWidget(year_label)
+        
+        year_combo = QComboBox()
+        current_year = year
+        for y in range(current_year - 5, current_year + 6):
+            year_combo.addItem(str(y))
+        year_combo.setCurrentText(str(year))
+        layout.addWidget(year_combo)
+        
+        # Month selection
+        month_label = QLabel("Month:")
+        month_label.setFont(QFont("Arial", 12, QFont.Bold))
+        layout.addWidget(month_label)
+        
+        month_combo = QComboBox()
+        months = ["January", "February", "March", "April", "May", "June",
+                 "July", "August", "September", "October", "November", "December"]
+        for i, month_name in enumerate(months):
+            month_combo.addItem(month_name)
+        month_combo.setCurrentIndex(month - 1)
+        layout.addWidget(month_combo)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        ok_button = QPushButton("OK")
+        ok_button.setStyleSheet("background: #ff6600; color: white; border-radius: 5px; padding: 8px;")
+        ok_button.clicked.connect(lambda: self.apply_calendar_selection(
+            int(year_combo.currentText()), month_combo.currentIndex() + 1, dialog))
+        
+        cancel_button = QPushButton("Cancel")
+        cancel_button.setStyleSheet("background: #666; color: white; border-radius: 5px; padding: 8px;")
+        cancel_button.clicked.connect(dialog.reject)
+        
+        button_layout.addWidget(ok_button)
+        button_layout.addWidget(cancel_button)
+        layout.addLayout(button_layout)
+        
+        dialog.exec_()
+
+    def apply_calendar_selection(self, year, month, dialog):
+        """Apply the selected year and month to the calendar"""
+        try:
+            from PyQt5.QtCore import QDate
+            # Set the calendar to the selected month/year
+            self.schedule_calendar.setCurrentPage(year, month)
+            dialog.accept()
+        except Exception as e:
+            print(f"Error applying calendar selection: {e}")
+            dialog.reject()
 
     def open_chatbot_dialog(self):
         dlg = ChatbotDialog(self)
@@ -1036,14 +1129,31 @@ class Dashboard(QWidget):
             else:
                 metrics['st_interval'] = 100  # Fallback
             
-            metrics['sampling_rate'] = f"{sampling_rate} Hz"
+            # Calculate QTc (Corrected QT interval) - Bazett's formula
+            if 'heart_rate' in metrics and 'st_interval' in metrics:
+                try:
+                    hr = metrics['heart_rate']
+                    st = metrics['st_interval']
+                    if isinstance(hr, (int, float)) and isinstance(st, (int, float)) and hr > 0:
+                        # QTc = QT / sqrt(RR) where RR = 60/HR
+                        rr_interval = 60000 / hr  # RR interval in ms
+                        qtc = st * (1000 / np.sqrt(rr_interval))  # Bazett's formula
+                        metrics['qtc_interval'] = int(round(qtc))
+                    else:
+                        metrics['qtc_interval'] = 400  # Normal QTc fallback
+                except:
+                    metrics['qtc_interval'] = 400  # Normal QTc fallback
+            else:
+                metrics['qtc_interval'] = 400  # Normal QTc fallback
             
-            # Calculate Time Elapsed (simulate based on data length)
-            if len(ecg_signal) > 0:
-                time_elapsed_sec = len(ecg_signal) / sampling_rate
-                minutes = int(time_elapsed_sec // 60)
-                seconds = int(time_elapsed_sec % 60)
-                metrics['time_elapsed'] = f"{minutes:02d}:{seconds:02d}"
+            # metrics['sampling_rate'] = f"{sampling_rate} Hz"  # Commented out
+            
+            # Calculate Time Elapsed (simulate based on data length) - Commented out
+            # if len(ecg_signal) > 0:
+            #     time_elapsed_sec = len(ecg_signal) / sampling_rate
+            #     minutes = int(time_elapsed_sec // 60)
+            #     seconds = int(time_elapsed_sec % 60)
+            #     metrics['time_elapsed'] = f"{minutes:02d}:{seconds:02d}"
             
             return metrics
             
@@ -1082,9 +1192,13 @@ class Dashboard(QWidget):
             if 'st_interval' in ecg_metrics:
                 self.metric_labels['st_interval'].setText(f"{ecg_metrics['st_interval']} ms")
             
-            # Update Sampling Rate
-            if 'sampling_rate' in ecg_metrics:
-                self.metric_labels['sampling_rate'].setText(ecg_metrics['sampling_rate'])
+            # Update QTc Interval
+            if 'qtc_interval' in ecg_metrics:
+                self.metric_labels['qtc_interval'].setText(f"{ecg_metrics['qtc_interval']} ms")
+            
+            # Update Sampling Rate - Commented out
+            # if 'sampling_rate' in ecg_metrics:
+            #     self.metric_labels['sampling_rate'].setText(ecg_metrics['sampling_rate'])
             
         except Exception as e:
             print(f"Error updating live dashboard metrics: {e}")
@@ -1163,11 +1277,13 @@ class Dashboard(QWidget):
                         if np.isnan(src_mean) or np.isinf(src_mean):
                             src_mean = 0
                         src_centered = src - src_mean
-                        src_centered = src_centered + 1000  # center vertically for this Matplotlib axis
+                        # Scale the signal to fit within the Y-axis range (-300 to 300)
+                        if np.std(src_centered) > 0:
+                            src_centered = src_centered * (200 / np.std(src_centered))  # Scale to fit in range
                         
                         display_len = len(self.ecg_x)
                         if src_centered.size <= 1:
-                            display_y = np.full(display_len, 1000.0)
+                            display_y = np.full(display_len, 0.0)  # Center at 0
                         else:
                             x_src = np.linspace(0.0, 1.0, src_centered.size)
                             x_dst = np.linspace(0.0, 1.0, display_len)
@@ -1219,7 +1335,7 @@ class Dashboard(QWidget):
         """Fallback wave generation when ECG data is not available"""
         try:
             self.ecg_y = np.roll(self.ecg_y, -1)
-            self.ecg_y[-1] = 1000 + 200 * np.sin(2 * np.pi * 2 * self.ecg_x[-1] + frame/10) + 50 * np.random.randn()
+            self.ecg_y[-1] = 150 * np.sin(2 * np.pi * 2 * self.ecg_x[-1] + frame/10) + 30 * np.random.randn()  # Smaller amplitude
             self.ecg_line.set_ydata(self.ecg_y)
             # Do not compute/update metrics from mock wave; keep zeros until user starts
             return [self.ecg_line]
@@ -1327,11 +1443,16 @@ class Dashboard(QWidget):
                         if qrs_text and qrs_text != '--':
                             self.metric_labels['qrs_duration'].setText(f"{qrs_text} ms")
                     
-                    if 'sampling_rate' in ecg_metrics:
-                        sr_text = ecg_metrics['sampling_rate']
-                        if sr_text and sr_text != '--':
-                            self.metric_labels['sampling_rate'].setText(f"{sr_text}")
+                    # if 'sampling_rate' in ecg_metrics:  # Commented out
+                    #     sr_text = ecg_metrics['sampling_rate']
+                    #     if sr_text and sr_text != '--':
+                    #         self.metric_labels['sampling_rate'].setText(f"{sr_text}")
                     # Time Elapsed metric removed
+                    
+                    if 'qtc_interval' in ecg_metrics:
+                        qtc_text = ecg_metrics['qtc_interval']
+                        if qtc_text and qtc_text != '--':
+                            self.metric_labels['qtc_interval'].setText(f"{qtc_text} ms")
 
                     # Record to session file if enabled
                     try:
@@ -1344,11 +1465,12 @@ class Dashboard(QWidget):
                                 'qrs_duration': self.metric_labels['qrs_duration'].text() if 'qrs_duration' in self.metric_labels else None,
                                 'qrs_axis': self.metric_labels['qrs_axis'].text() if 'qrs_axis' in self.metric_labels else None,
                                 'st_interval': self.metric_labels['st_interval'].text() if 'st_interval' in self.metric_labels else None,
-                                'sampling_rate': self.metric_labels['sampling_rate'].text() if 'sampling_rate' in self.metric_labels else None,
+                                # 'sampling_rate': self.metric_labels['sampling_rate'].text() if 'sampling_rate' in self.metric_labels else None,  # Commented out
+                                'qtc_interval': self.metric_labels['qtc_interval'].text() if 'qtc_interval' in self.metric_labels else None,
                             }
-                            # Ensure demo live time is reflected if provided by demo manager
-                            if 'time_elapsed' in ecg_metrics and 'time_elapsed' in self.metric_labels:
-                                self.metric_labels['time_elapsed'].setText(ecg_metrics['time_elapsed'])
+                            # Ensure demo live time is reflected if provided by demo manager - Commented out
+                            # if 'time_elapsed' in ecg_metrics and 'time_elapsed' in self.metric_labels:
+                            #     self.metric_labels['time_elapsed'].setText(ecg_metrics['time_elapsed'])
 
                             # Snapshot last 5s per lead
                             from utils.session_recorder import SessionRecorder
