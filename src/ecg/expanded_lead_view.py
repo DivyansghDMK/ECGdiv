@@ -585,7 +585,7 @@ class ExpandedLeadView(QDialog):
         # Include Heart Rate and R-R Interval display as requested
         metrics = [
             ("Heart Rate", 0, "bpm", "#e74c3c"),
-            ("R-R Interval", 0, "ms", "#2980b9"),
+            ("RR Interval", 0, "ms", "#2980b9"),
             ("PR Interval", 0, "ms", "#8e44ad"),
             ("QRS Duration", 0, "ms", "#27ae60"),
             ("P Duration", 0, "ms", "#16a085"),
