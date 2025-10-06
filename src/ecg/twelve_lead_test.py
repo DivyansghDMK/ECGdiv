@@ -1577,6 +1577,14 @@ class ECGTestPage(QWidget):
     def calculate_heart_rate(self, lead_data):
         """Calculate heart rate from Lead II data using R-R intervals"""
         try:
+            # Early exit: if no real signal, report 0 instead of fallback
+            try:
+                arr = np.asarray(lead_data, dtype=float)
+                if len(arr) < 200 or np.all(arr == 0) or np.std(arr) < 0.1:
+                    return 0
+            except Exception:
+                return 0
+
             # Validate input data
             if not isinstance(lead_data, (list, np.ndarray)) or len(lead_data) < 200:
                 print("❌ Insufficient data for heart rate calculation")
