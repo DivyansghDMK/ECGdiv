@@ -893,6 +893,8 @@ class ECGTestPage(QWidget):
         self.max_buffer_size = 10000  # Maximum buffer size to prevent memory issues
         self.memory_check_interval = 1000  # Check memory every 1000 updates
         self.update_count = 0
+        # Hold last displayed HR to avoid unnecessary flicker
+        self._last_hr_display = None
         # HR smoothing/lock removed; use original calculation
         
         # Initialize crash logger
@@ -1677,7 +1679,7 @@ class ECGTestPage(QWidget):
                 print(f"❌ Error filtering intervals: {e}")
                 return 60
 
-            # Calculate heart rate from median R-R interval
+            # Calculate heart rate from median R-R interval (as in commit 8a6aaee)
             try:
                 median_rr = np.median(valid_intervals)
                 if median_rr <= 0:
@@ -1688,7 +1690,15 @@ class ECGTestPage(QWidget):
                 if np.isnan(heart_rate) or np.isinf(heart_rate):
                     print("❌ Invalid heart rate calculated")
                     return 60
-                return int(heart_rate)
+                # Stability: only update if changed by >= 1 bpm; otherwise hold previous
+                hr_int = int(round(heart_rate))
+                try:
+                    if self._last_hr_display is not None and abs(hr_int - self._last_hr_display) < 1:
+                        return self._last_hr_display
+                    self._last_hr_display = hr_int
+                except Exception:
+                    pass
+                return hr_int
             except Exception as e:
                 print(f"❌ Error in final heart rate calculation: {e}")
                 return 60
