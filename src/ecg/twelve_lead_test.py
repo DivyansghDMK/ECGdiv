@@ -1566,16 +1566,17 @@ class ECGTestPage(QWidget):
         # Calculate QRS Axis
         qrs_axis = self.calculate_qrs_axis()
         
-        # Calculate ST Interval
-        st_interval = self.calculate_st_interval(lead_ii_data)
-        print(f"🔍 ST Interval calculated: {st_interval} ms")
+        # Calculate ST Segment (J-point elevation/depression)
+        st_segment = self.calculate_st_interval(lead_ii_data)
         
-        # Calculate QTc Interval (same as ST interval)
-        qtc_interval = self.calculate_qtc_interval(heart_rate, st_interval)
-        print(f"🔍 QTc Interval calculated: {qtc_interval} ms")
+        # Calculate QT Interval (Q to T-end)
+        qt_interval = self.calculate_qt_interval(lead_ii_data)
+        
+        # Calculate QTc (corrected QT using Bazett's formula)
+        qtc_interval = self.calculate_qtc_interval(heart_rate, qt_interval)
         
         # Update UI metrics
-        self.update_ecg_metrics_display(heart_rate, pr_interval, qrs_duration, qrs_axis, st_interval, qtc_interval)
+        self.update_ecg_metrics_display(heart_rate, pr_interval, qrs_duration, qrs_axis, st_segment, qtc_interval)
 
     def calculate_heart_rate(self, lead_data):
         """Calculate heart rate from Lead II data using R-R intervals"""
@@ -1842,18 +1843,17 @@ class ECGTestPage(QWidget):
             return 0
 
     def calculate_st_interval(self, lead_data):
-        """Calculate ST interval - LIVE"""
+        """Calculate ST segment elevation/depression at J+60ms - FRESH calculation"""
         try:
             # Early exit: no real signal → 0
             try:
                 arr = np.asarray(lead_data, dtype=float)
                 if len(arr) < 200 or np.all(arr == 0) or np.std(arr) < 0.1:
-                    print(f"🔍 ST: Insufficient/flat data ({len(arr)} samples)")
                     return 0
             except Exception:
                 return 0
             
-            # Apply bandpass filter to enhance R-peaks (0.5-40 Hz)
+            # Get sampling rate
             from scipy.signal import butter, filtfilt, find_peaks
             fs = 80  # Default to hardware sampling rate
             if hasattr(self, 'sampler') and hasattr(self.sampler, 'sampling_rate') and self.sampler.sampling_rate:
@@ -1861,104 +1861,176 @@ class ECGTestPage(QWidget):
             elif hasattr(self, 'sampling_rate') and self.sampling_rate:
                 fs = float(self.sampling_rate)
             
-            print(f"🔍 ST: Using sampling rate {fs} Hz for calculation")
-            print(f"🔍 ST: Data length: {len(lead_data)}, Data range: {np.min(lead_data):.2f} to {np.max(lead_data):.2f}")
-            
+            # Filter signal (0.5-40 Hz bandpass)
             nyquist = fs / 2
             low = 0.5 / nyquist
             high = 40 / nyquist
             b, a = butter(4, [low, high], btype='band')
             filtered_signal = filtfilt(b, a, lead_data)
             
-            print(f"🔍 ST: Filtered signal range: {np.min(filtered_signal):.2f} to {np.max(filtered_signal):.2f}")
-            print(f"🔍 ST: Filtered signal std: {np.std(filtered_signal):.2f}")
-            
-            # Find R-peaks with more lenient parameters for hardware data
+            # Find R-peaks (lenient for hardware)
             mean_height = np.mean(filtered_signal)
             std_height = np.std(filtered_signal)
-            min_height = mean_height + 0.3 * std_height  # Reduced from 0.5
-            min_distance = int(0.3 * fs)  # Reduced from 0.4 (240ms at 80Hz)
-            min_prominence = std_height * 0.2  # Reduced from 0.3
+            min_height = mean_height + 0.3 * std_height
+            min_distance = int(0.3 * fs)
+            min_prominence = std_height * 0.2
             
-            print(f"🔍 ST: R-peak detection params - height: {min_height:.2f}, distance: {min_distance}, prominence: {min_prominence:.2f}")
-            
-            peaks, properties = find_peaks(
+            peaks, _ = find_peaks(
                 filtered_signal,
                 height=min_height,
                 distance=min_distance,
                 prominence=min_prominence
             )
             
-            print(f"🔍 ST: Found {len(peaks)} R-peaks")
+            if len(peaks) < 1:
+                return 0
             
-            if len(peaks) > 0:
-                st_intervals = []
-                for r_peak in peaks[:min(5, len(peaks))]:
-                    # Find S point
-                    s_start = r_peak
-                    s_end = min(len(filtered_signal), r_peak + int(0.04 * fs))  # 40ms after R
-                    if s_end > s_start:
-                        s_point = s_start + np.argmin(filtered_signal[s_start:s_end])
-                    else:
-                        s_point = r_peak
+            st_elevations = []
+            for r_peak in peaks[:min(5, len(peaks))]:
+                try:
+                    # Find J-point (end of S-wave, ~40ms after R)
+                    j_start = r_peak
+                    j_end = min(len(filtered_signal), r_peak + int(0.04 * fs))
+                    if j_end <= j_start:
+                        continue
+                    j_point = j_start + np.argmin(filtered_signal[j_start:j_end])
                     
-                    # Find T wave end (next R peak or end of signal)
-                    next_r = r_peak + int(0.4 * fs)  # Expected next R in 400ms
-                    if next_r < len(filtered_signal):
-                        # Find T wave end by looking for return to baseline
-                        t_segment = filtered_signal[r_peak:next_r]
-                        if len(t_segment) > 0:
-                            # Find where signal returns to baseline (mean of segment)
-                            baseline = np.mean(t_segment)
-                            t_end_candidates = np.where(np.abs(t_segment - baseline) < 0.1 * np.std(t_segment))[0]
-                            if len(t_end_candidates) > 0:
-                                t_end = r_peak + t_end_candidates[-1]
-                                st_interval = (t_end - s_point) / fs * 1000  # Convert to ms
-                                print(f"🔍 ST: Calculated interval {st_interval:.1f} ms")
-                                if 50 <= st_interval <= 300:  # Reasonable ST interval
-                                    st_intervals.append(st_interval)
-                                    print(f"🔍 ST: Valid interval {st_interval:.1f} ms added")
-                                else:
-                                    print(f"🔍 ST: Interval {st_interval:.1f} ms outside range (50-300)")
-                
-                if st_intervals:
-                    result = int(round(np.mean(st_intervals)))
-                    print(f"🔍 ST: Final result {result} ms from {len(st_intervals)} intervals")
-                    return result
+                    # Measure ST at J+60ms (standard ST measurement point)
+                    st_measure_point = min(len(filtered_signal) - 1, j_point + int(0.06 * fs))
+                    
+                    # Get baseline: isoelectric line ~100ms before R
+                    baseline_start = max(0, r_peak - int(0.15 * fs))
+                    baseline_end = max(0, r_peak - int(0.05 * fs))
+                    if baseline_end > baseline_start:
+                        baseline = np.mean(filtered_signal[baseline_start:baseline_end])
+                    else:
+                        baseline = np.mean(filtered_signal)
+                    
+                    # ST elevation/depression relative to signal amplitude
+                    st_raw = filtered_signal[st_measure_point] - baseline
+                    
+                    # Normalize by signal std to get a dimensionless measure
+                    # Then scale to typical display range (0-100 units, where 10 = mild elevation)
+                    if std_height > 0:
+                        st_normalized = (st_raw / std_height) * 10.0
+                    else:
+                        st_normalized = 0
+                    
+                    st_display = int(round(st_normalized))
+                    
+                    # Reasonable ST range: -100 to +100 (normalized units)
+                    if -100 <= st_display <= 100:
+                        st_elevations.append(st_display)
+                    else:
+                        pass  # Silently reject extreme outliers
+                except Exception as e:
+                    print(f"🔍 ST: Exception in beat analysis: {e}")
+                    continue
             
-            print(f"🔍 ST: No valid intervals found, returning 0 ms")
-            return 0  # Fallback to 0 when not computable
+            if st_elevations:
+                return int(round(np.mean(st_elevations)))
+            
+            return 0  # No ST detected
         except:
             return 0
 
-    def calculate_qtc_interval(self, heart_rate, st_interval):
+    def calculate_qt_interval(self, lead_data):
+        """Calculate QT interval (Q-wave onset to T-wave end) from Lead II"""
+        try:
+            # Early exit: no real signal
+            try:
+                arr = np.asarray(lead_data, dtype=float)
+                if len(arr) < 200 or np.all(arr == 0) or np.std(arr) < 0.1:
+                    return 0
+            except Exception:
+                return 0
+            
+            # Get sampling rate
+            from scipy.signal import butter, filtfilt, find_peaks
+            fs = 80
+            if hasattr(self, 'sampler') and hasattr(self.sampler, 'sampling_rate') and self.sampler.sampling_rate:
+                fs = float(self.sampler.sampling_rate)
+            elif hasattr(self, 'sampling_rate') and self.sampling_rate:
+                fs = float(self.sampling_rate)
+            
+            # Filter signal
+            nyquist = fs / 2
+            low = 0.5 / nyquist
+            high = 40 / nyquist
+            b, a = butter(4, [low, high], btype='band')
+            filtered_signal = filtfilt(b, a, lead_data)
+            
+            # Find R-peaks
+            mean_height = np.mean(filtered_signal)
+            std_height = np.std(filtered_signal)
+            peaks, _ = find_peaks(
+                filtered_signal,
+                height=mean_height + 0.3 * std_height,
+                distance=int(0.3 * fs),
+                prominence=std_height * 0.2
+            )
+            
+            if len(peaks) < 1:
+                return 0
+            
+            qt_intervals = []
+            for r_peak in peaks[:min(5, len(peaks))]:
+                try:
+                    # Find Q-point (min before R, within 40ms)
+                    q_start = max(0, r_peak - int(0.04 * fs))
+                    q_end = r_peak
+                    if q_end > q_start:
+                        q_point = q_start + np.argmin(filtered_signal[q_start:q_end])
+                    else:
+                        q_point = r_peak
+                    
+                    # Find T-wave end (return to baseline after R)
+                    t_search_start = r_peak + int(0.08 * fs)  # After QRS
+                    t_search_end = min(len(filtered_signal), r_peak + int(0.5 * fs))  # 500ms max
+                    if t_search_end > t_search_start:
+                        t_segment = filtered_signal[t_search_start:t_search_end]
+                        baseline = np.mean(filtered_signal[max(0, r_peak - int(0.15 * fs)):max(0, r_peak - int(0.05 * fs))])
+                        # Find where signal returns to baseline
+                        t_end_candidates = np.where(np.abs(t_segment - baseline) < 0.15 * std_height)[0]
+                        if len(t_end_candidates) > 0:
+                            t_end = t_search_start + t_end_candidates[-1]
+                            qt_ms = (t_end - q_point) / fs * 1000.0
+                            if 200 <= qt_ms <= 600:  # Reasonable QT interval
+                                qt_intervals.append(qt_ms)
+                except Exception:
+                    continue
+            
+            if qt_intervals:
+                return int(round(np.mean(qt_intervals)))
+            
+            return 0
+        except:
+            return 0
+
+    def calculate_qtc_interval(self, heart_rate, qt_interval):
         """Calculate QTc using Bazett's formula: QTc = QT / sqrt(RR)"""
         try:
             if not heart_rate or heart_rate <= 0:
-                print(f"🔍 QTc: Invalid heart rate ({heart_rate}), returning 0")
                 return 0
             
-            if not st_interval or st_interval <= 0:
-                print(f"🔍 QTc: Invalid ST interval ({st_interval}), returning 0")
+            if not qt_interval or qt_interval <= 0:
                 return 0
             
             # Calculate RR interval from heart rate (in seconds)
-            rr_interval = 60.0 / heart_rate  # RR interval in seconds
+            rr_interval = 60.0 / heart_rate
             
-            # Use ST interval as QT interval (this is an approximation)
-            qt_interval = st_interval / 1000.0  # Convert ms to seconds
+            # QT in seconds
+            qt_sec = qt_interval / 1000.0
             
             # Apply Bazett's formula: QTc = QT / sqrt(RR)
-            qtc = qt_interval / np.sqrt(rr_interval)
+            qtc = qt_sec / np.sqrt(rr_interval)
             
             # Convert back to milliseconds
             qtc_ms = int(round(qtc * 1000))
             
-            print(f"🔍 QTc: HR={heart_rate}, ST={st_interval}ms, RR={rr_interval:.3f}s, QTc={qtc_ms}ms")
             return qtc_ms
             
         except Exception as e:
-            print(f"🔍 QTc: Error {e}, returning 0")
             return 0
 
     def update_ecg_metrics_display(self, heart_rate, pr_interval, qrs_duration, qrs_axis, st_interval, qtc_interval=None):
