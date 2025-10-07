@@ -717,7 +717,7 @@ class Dashboard(QWidget):
             ("QRS Complex", "0", "ms", "qrs_duration"),
             ("QRS Axis", "0°", "", "qrs_axis"),
             ("ST", "0", "ms", "st_interval"),
-            ("QTc", "0", "ms", "qtc_interval"),
+            ("QT/Qtc", "0", "ms", "qtc_interval"),
             ("Time", "00:00", "", "time_elapsed"),  # Restore time for synchronization
         ]
         
@@ -1182,9 +1182,14 @@ class Dashboard(QWidget):
             if 'st_interval' in ecg_metrics:
                 self.metric_labels['st_interval'].setText(f"{ecg_metrics['st_interval']} ms")
             
-            # Update QTc Interval
+            # Update QTc Interval (handles both single value and QT/QTc format)
             if 'qtc_interval' in ecg_metrics:
-                self.metric_labels['qtc_interval'].setText(f"{ecg_metrics['qtc_interval']} ms")
+                qtc_text = ecg_metrics['qtc_interval']
+                # If already formatted as QT/QTc, don't add " ms" suffix
+                if '/' in str(qtc_text):
+                    self.metric_labels['qtc_interval'].setText(str(qtc_text))
+                else:
+                    self.metric_labels['qtc_interval'].setText(f"{qtc_text} ms")
             
             # Update Sampling Rate - Commented out
             # if 'sampling_rate' in ecg_metrics:

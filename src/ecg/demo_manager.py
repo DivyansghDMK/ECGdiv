@@ -754,6 +754,10 @@ class DemoManager:
                         qt_interval = self._calculate_qt_interval(q_peaks, t_peaks, sampling_rate)
                         qtc_interval = self._calculate_qtc_interval(qt_interval, heart_rate)
                         
+                        # Store both QT and QTc for display
+                        qt_value = int(round(qt_interval)) if (qt_interval is not None and qt_interval >= 0) else 380
+                        qtc_value = int(round(qtc_interval)) if (qtc_interval is not None and qtc_interval >= 0) else 400
+                        
                         # Get calculation functions at runtime to avoid circular import
                         calculate_qrs_axis, calculate_st_segment = self._get_calculation_functions()
                         
@@ -778,17 +782,19 @@ class DemoManager:
                                 fixed_hr = 60  # BPM (fixed)
                                 fixed_pr = 160  # ms (fixed)
                                 fixed_qrs = 85  # ms (fixed)
-                                fixed_qtc = int(round(qtc_interval)) if (qtc_interval is not None and qtc_interval >= 0) else 400
+                                fixed_qt = qt_value  # Calculated QT
+                                fixed_qtc = qtc_value  # Calculated QTc
                                 fixed_axis = qrs_axis if qrs_axis is not None else "0°"
                                 fixed_st = 90  # ms (fixed)
                             except Exception:
-                                fixed_hr, fixed_pr, fixed_qrs, fixed_qtc, fixed_axis, fixed_st = 60, 160, 85, 400, "0°", 90
+                                fixed_hr, fixed_pr, fixed_qrs, fixed_qt, fixed_qtc, fixed_axis, fixed_st = 60, 160, 85, 380, 400, "0°", 90
                             self._demo_fixed_metrics = {
                                 'Heart_Rate': fixed_hr,
                                 'PR': fixed_pr,
                                 'QRS': fixed_qrs,
+                                'QT': fixed_qt,
                                 'QTc': fixed_qtc,
-                                'QTc_interval': fixed_qtc,  # Add both keys for compatibility
+                                'QTc_interval': f"{fixed_qt}/{fixed_qtc}",  # Display as QT/QTc format
                                 'QRS_axis': fixed_axis,
                                 'ST': fixed_st
                             }

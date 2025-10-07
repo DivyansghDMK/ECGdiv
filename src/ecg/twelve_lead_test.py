@@ -1575,8 +1575,8 @@ class ECGTestPage(QWidget):
         # Calculate QTc (corrected QT using Bazett's formula)
         qtc_interval = self.calculate_qtc_interval(heart_rate, qt_interval)
         
-        # Update UI metrics
-        self.update_ecg_metrics_display(heart_rate, pr_interval, qrs_duration, qrs_axis, st_segment, qtc_interval)
+        # Update UI metrics (pass both QT and QTc)
+        self.update_ecg_metrics_display(heart_rate, pr_interval, qrs_duration, qrs_axis, st_segment, qt_interval, qtc_interval)
 
     def calculate_heart_rate(self, lead_data):
         """Calculate heart rate from Lead II data using R-R intervals"""
@@ -2033,10 +2033,10 @@ class ECGTestPage(QWidget):
         except Exception as e:
             return 0
 
-    def update_ecg_metrics_display(self, heart_rate, pr_interval, qrs_duration, qrs_axis, st_interval, qtc_interval=None):
+    def update_ecg_metrics_display(self, heart_rate, pr_interval, qrs_duration, qrs_axis, st_interval, qt_interval=None, qtc_interval=None):
         """Update the ECG metrics display in the UI"""
         try:
-            print(f"🔍 UI Update: HR={heart_rate}, PR={pr_interval}, QRS={qrs_duration}, Axis={qrs_axis}, ST={st_interval}, QTc={qtc_interval}")
+            print(f"🔍 UI Update: HR={heart_rate}, PR={pr_interval}, QRS={qrs_duration}, Axis={qrs_axis}, ST={st_interval}, QT={qt_interval}, QTc={qtc_interval}")
             
             if hasattr(self, 'metric_labels'):
                 if 'heart_rate' in self.metric_labels:
@@ -2049,8 +2049,12 @@ class ECGTestPage(QWidget):
                     self.metric_labels['qrs_axis'].setText(f"{qrs_axis}°")
                 if 'st_interval' in self.metric_labels:
                     self.metric_labels['st_interval'].setText(f"{st_interval} ")
-                if 'qtc_interval' in self.metric_labels and qtc_interval is not None:
-                    self.metric_labels['qtc_interval'].setText(f"{qtc_interval} ")
+                if 'qtc_interval' in self.metric_labels:
+                    # Display both QT and QTc in the same metric
+                    if qt_interval is not None and qtc_interval is not None:
+                        self.metric_labels['qtc_interval'].setText(f"{qt_interval}/{qtc_interval}")
+                    elif qtc_interval is not None:
+                        self.metric_labels['qtc_interval'].setText(f"{qtc_interval} ")
         except Exception as e:
             print(f"Error updating ECG metrics: {e}")
 
@@ -2244,7 +2248,7 @@ class ECGTestPage(QWidget):
             ("QRS", "0", "qrs_duration", "#ffffff"),
             ("Axis", "0°", "qrs_axis", "#ffffff"),
             ("ST", "0", "st_interval", "#ffffff"),
-            ("QTc", "0", "qtc_interval", "#ffffff"),
+            ("QT/Qtc", "0", "qtc_interval", "#ffffff"),
             ("Time", "00:00", "time_elapsed", "#ffffff"),
         ]
         
@@ -2498,7 +2502,7 @@ class ECGTestPage(QWidget):
                 if 'st_interval' in self.metric_labels:
                     self.metric_labels['st_interval'].setText("0")
                 if 'qtc_interval' in self.metric_labels:
-                    self.metric_labels['qtc_interval'].setText("0")
+                    self.metric_labels['qtc_interval'].setText("0/0")
                 if 'time_elapsed' in self.metric_labels:
                     self.metric_labels['time_elapsed'].setText("00:00")
         except Exception:
@@ -3004,7 +3008,7 @@ class ECGTestPage(QWidget):
         metrics_row.setAlignment(Qt.AlignHCenter)
         cards = [create_metric_card("PR Interval", pr_label),
                  create_metric_card("QRS Duration", qrs_label),
-                 create_metric_card("QTc Interval", qtc_label),
+                 create_metric_card("QT/Qtc Interval", qtc_label),
                  create_metric_card("Arrhythmia", arrhythmia_label)]
         for card in cards:
             card.setMinimumWidth(0)
@@ -3754,7 +3758,7 @@ class ECGTestPage(QWidget):
                     if 'qrs_duration' in self.metric_labels: self.metric_labels['qrs_duration'].setText("0")
                     if 'qrs_axis' in self.metric_labels: self.metric_labels['qrs_axis'].setText("0°")
                     if 'st_interval' in self.metric_labels: self.metric_labels['st_interval'].setText("0")
-                    if 'qtc_interval' in self.metric_labels: self.metric_labels['qtc_interval'].setText("0")
+                    if 'qtc_interval' in self.metric_labels: self.metric_labels['qtc_interval'].setText("0/0")
                     if 'time_elapsed' in self.metric_labels: self.metric_labels['time_elapsed'].setText("00:00")
                     # if 'sampling_rate' in self.metric_labels: self.metric_labels['sampling_rate'].setText("0 Hz")  # Commented out
             except Exception as _:
