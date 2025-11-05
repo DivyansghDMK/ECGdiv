@@ -33,24 +33,31 @@
 
 ## Team Structure & Roles
 
-### 👨‍💼 Divyansh (Project Lead & Full-Stack Developer)
+### 👨‍💼 Divyansh (Project Lead & Backend Lead)
 **Primary Responsibilities:**
 - Overall project coordination
 - Sprint planning and daily standups
-- Backend development (Python, AWS)
+- **BACKEND DEVELOPMENT (All Python/Core Logic)**
+  - Guest Mode backend implementation
+  - Email/OTP authentication system
+  - Password encryption and security
+  - Role-based access control (RBAC)
+  - ECG signal processing improvements
+  - Report generation enhancements
 - Code reviews and quality control
 - Stakeholder communication
+- AWS architecture decisions
 
 **Weekly Tasks:**
 - Monday: Sprint planning, task assignment
-- Tuesday-Thursday: Development and code reviews
+- Tuesday-Thursday: Backend development and code reviews
 - Friday: Demo, retrospective, planning
 - Daily: 15-min standup, unblock team
 
 **Key Deliverables:**
-- Week 1-2: Guest Mode, Email/OTP Auth
-- Week 3-4: Production infrastructure, security audit
-- Week 5-6: Beta monitoring, performance tuning
+- Week 1-2: Guest Mode (backend), Email/OTP Auth (backend)
+- Week 3-4: Password encryption, RBAC, security audit
+- Week 5-6: Beta monitoring, backend bug fixes
 - Week 7-8: Rollout coordination, incident response
 
 ---
@@ -62,6 +69,7 @@
 - Dashboard enhancements
 - User experience testing
 - Documentation (user guides)
+- **Works with Divyansh's backend APIs**
 
 **Weekly Tasks:**
 - Frontend feature development
@@ -78,26 +86,27 @@
 
 ---
 
-### 👨‍💻 Indresh (Backend & DevOps Engineer)
+### 👨‍💻 Indresh (DevOps & Infrastructure Engineer)
 **Primary Responsibilities:**
-- Backend development
-- AWS infrastructure setup
-- Database optimization
-- CI/CD pipeline
-- Monitoring and logging
+- AWS infrastructure setup and management
+- CI/CD pipeline configuration
+- Monitoring and alerting setup
+- Performance optimization
+- Database administration (if needed)
+- **Deployment of Divyansh's backend code**
 
 **Weekly Tasks:**
-- Backend API development
-- AWS S3/SES configuration
-- Performance optimization
-- Automated testing
+- AWS S3/SES/CloudWatch configuration
 - Deployment automation
+- Performance monitoring
+- Load testing
+- Infrastructure scaling
 
 **Key Deliverables:**
-- Week 1-2: Email service (AWS SES), OTP backend
+- Week 1-2: AWS SES setup, infrastructure for OTP
 - Week 3-4: CI/CD pipeline, monitoring setup
-- Week 5-6: Load testing, database optimization
-- Week 7-8: Scaling infrastructure, backup systems
+- Week 5-6: Load testing, infrastructure scaling
+- Week 7-8: Production deployment, backup systems
 
 ---
 
@@ -141,18 +150,17 @@
   - Create SES account, verify domain
   - Request production access (move out of sandbox)
   - Set up sending limits (200/day → 50,000/day)
-- 🔨 **Day 2-3 (Nov 6-7):** Configure email templates
-  - OTP email template (HTML)
-  - Welcome email template
-  - Password reset template
-  - Test email delivery
-- 🔨 **Day 4-5 (Nov 8-9):** Implement OTP backend
-  - Generate 6-digit OTP
-  - Store OTP with expiry (Redis or in-memory)
-  - Validate OTP logic
-  - Rate limiting (max 3 attempts)
-- 🔨 **Day 6 (Nov 10):** Integration testing
-- 🔨 **Day 7 (Nov 11):** Document AWS SES setup
+- 🔨 **Day 2-3 (Nov 6-7):** Configure AWS SES infrastructure
+  - Set up email templates (HTML) in AWS
+  - Configure bounce/complaint handling
+  - Set up SNS notifications
+  - Test email delivery from AWS
+- 🔨 **Day 4-5 (Nov 8-9):** Support Divyansh's OTP backend
+  - Set up Redis/ElastiCache for OTP storage (if needed)
+  - Configure rate limiting infrastructure
+  - Test integration with Divyansh's OTP code
+- 🔨 **Day 6 (Nov 10):** Infrastructure testing
+- 🔨 **Day 7 (Nov 11):** Document AWS SES setup guide
 
 #### **Deliverables (End of Week 1):**
 - ✅ Guest Mode: 70% complete (backend done, UI in progress)
@@ -167,18 +175,19 @@
 #### **Sprint Goal:** Complete Guest Mode + Email/OTP Authentication
 
 #### **Divyansh:**
-- 🔨 **Day 1-2 (Nov 12-13):** Complete OTP validation
-  - Email verification flow
-  - OTP expiry handling
+- 🔨 **Day 1-2 (Nov 12-13):** Complete OTP backend
+  - Email verification flow backend
+  - OTP expiry handling logic
   - Resend OTP functionality
-- 🔨 **Day 3 (Nov 14):** "Forgot Password" flow
-  - Generate reset token
-  - Email reset link
-  - Reset password page
-- 🔨 **Day 4-5 (Nov 15-16):** Integration and testing
-  - Test Guest Mode end-to-end
-  - Test Email/OTP flow
-  - Fix bugs
+  - OTP validation and rate limiting
+- 🔨 **Day 3 (Nov 14):** "Forgot Password" backend
+  - Generate reset token (backend)
+  - Email reset link logic
+  - Reset password validation
+- 🔨 **Day 4-5 (Nov 15-16):** Backend integration and testing
+  - Test Guest Mode backend end-to-end
+  - Test Email/OTP backend flow
+  - Fix backend bugs
 - 🔨 **Day 6 (Nov 17):** Code review, merge to main
 - 🔨 **Day 7 (Nov 18):** Sprint review, Week 3 planning
 
@@ -199,19 +208,19 @@
 - 🔨 **Day 7 (Nov 18):** UI/UX testing, feedback
 
 #### **Indresh:**
-- 🔨 **Day 1-2 (Nov 12-13):** Email delivery optimization
-  - Monitor SES bounce rate
-  - Implement retry logic
-  - Log all email sends
-- 🔨 **Day 3-4 (Nov 14-15):** Security enhancements
-  - Rate limiting on OTP requests
-  - CAPTCHA integration (optional)
-  - Block disposable emails
-- 🔨 **Day 5-6 (Nov 16-17):** Database migration
-  - Update users.json schema for email
-  - Add email verification status
-  - Add OTP history
-- 🔨 **Day 7 (Nov 18):** Load testing (100 concurrent OTPs)
+- 🔨 **Day 1-2 (Nov 12-13):** Email delivery monitoring
+  - Set up SES bounce/complaint monitoring
+  - Configure CloudWatch alerts for email failures
+  - Set up logging for all email sends
+- 🔨 **Day 3-4 (Nov 14-15):** Infrastructure security
+  - Configure AWS WAF (rate limiting)
+  - Set up DDoS protection
+  - Configure security groups
+- 🔨 **Day 5-6 (Nov 16-17):** Support Divyansh's database migration
+  - Backup existing users.json
+  - Set up automated backups to S3
+  - Test restore procedures
+- 🔨 **Day 7 (Nov 18):** Load testing (100 concurrent OTP requests)
 
 #### **Deliverables (End of Week 2):**
 - ✅ Guest Mode: 100% complete and tested
