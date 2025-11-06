@@ -1188,14 +1188,15 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
             print(f"⚠️ Fallback amplitude computation failed: {e}")
 
     # Convert to mm (ECG standard: 1mV = 10mm)
-    p_mm = int(p_amp_mv * 10) if p_amp_mv > 0 else 12  # fallback to 12
-    qrs_mm = int(qrs_amp_mv * 10) if qrs_amp_mv > 0 else 37  # fallback to 37
-    t_mm = int(t_amp_mv * 10) if t_amp_mv > 0 else 34  # fallback to 34
+    # Keep 1 decimal place for better precision
+    p_mm = round(p_amp_mv * 10, 1) if p_amp_mv > 0 else 1.2  # fallback to 1.2
+    qrs_mm = round(qrs_amp_mv * 10, 1) if qrs_amp_mv > 0 else 15.0  # fallback to 15.0
+    t_mm = round(t_amp_mv * 10, 1) if t_amp_mv > 0 else 3.0  # fallback to 3.0
     
-    print(f"   Converted to mm: P={p_mm}, QRS={qrs_mm}, T={t_mm}")
+    print(f"   Converted to mm: P={p_mm:.1f}, QRS={qrs_mm:.1f}, T={t_mm:.1f}")
     
     # SECOND COLUMN - P/QRS/T
-    p_qrs_label = String(240, 670, f"P/QRS/T  : {p_mm}/{qrs_mm}/{t_mm}", 
+    p_qrs_label = String(240, 670, f"P/QRS/T  : {p_mm:.1f}/{qrs_mm:.1f}/{t_mm:.1f} mm", 
                          fontSize=10, fontName="Helvetica", fillColor=colors.black)
     master_drawing.add(p_qrs_label)
 
@@ -1246,11 +1247,12 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         except Exception as e:
             print(f"⚠️ Fallback RV5/SV1 computation failed: {e}")
 
-    # Convert to mV for display (values assumed to be in microvolt-like units; normalize)
-    rv5_mv = rv5_amp / 1000 if rv5_amp > 0 else 1.260  # fallback
-    sv1_mv = sv1_amp / 1000 if sv1_amp > 0 else 0.786  # fallback
+    # Values from calculate_wave_amplitudes() are ALREADY in mV (not μV!)
+    # NO conversion needed - just use directly
+    rv5_mv = rv5_amp if rv5_amp > 0 else 1.260  # Already in mV, fallback 1.260
+    sv1_mv = sv1_amp if sv1_amp > 0 else 0.786  # Already in mV, fallback 0.786
     
-    print(f"   Converted to mV: RV5={rv5_mv:.3f}, SV1={sv1_mv:.3f}")
+    print(f"   RV5={rv5_mv:.3f} mV, SV1={sv1_mv:.3f} mV (NO conversion - already in mV)")
     
     # SECOND COLUMN - RV5/SV1
     rv5_sv_label = String(240, 650, f"RV5/SV1  : {rv5_mv:.3f}/{sv1_mv:.3f}", 
@@ -1265,8 +1267,32 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                                fontSize=10, fontName="Helvetica", fillColor=colors.black)
     master_drawing.add(rv5_sv1_sum_label)
 
-    # SECOND COLUMN - QTCF
-    qtcf_label = String(240, 612, "QTCF       : 0.049", 
+    # SECOND COLUMN - QTCF (Fridericia formula: QTc = QT / ∛RR)
+    try:
+        if RR > 0 and QT > 0:
+            # Fridericia formula: QT / cube_root(RR)
+            qtcf_ms = round(QT / (RR ** (1/3)), 0)
+            
+            # Add status based on normal range (350-450 ms)
+            if qtcf_ms < 350:
+                qtcf_status = " (Short)"
+            elif qtcf_ms > 450:
+                qtcf_status = " (Prolonged)"
+            else:
+                qtcf_status = " (Normal)"
+            
+            qtcf_display = f"QTCF       : {int(qtcf_ms)} ms{qtcf_status}"
+            print(f"   QTCF calculated: {qtcf_ms:.0f} ms from QT={QT}, RR={RR}")
+        else:
+            qtcf_display = "QTCF       : -- ms (Insufficient data)"
+            qtcf_ms = 0
+            print(f"   QTCF not calculated: QT={QT}, RR={RR}")
+    except Exception as e:
+        qtcf_display = "QTCF       : -- ms (Calculation error)"
+        qtcf_ms = 0
+        print(f"⚠️ QTCF calculation error: {e}")
+    
+    qtcf_label = String(240, 612, qtcf_display, 
                         fontSize=10, fontName="Helvetica", fillColor=colors.black)
     master_drawing.add(qtcf_label)
 
@@ -1545,9 +1571,9 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                 "ST_ms": ST,
                 "RR_ms": RR,
                 "RV5_plus_SV1_mV": round(rv5_sv1_sum, 3),
-                "P_QRS_T_mm": [p_mm, qrs_mm, t_mm],
+                "P_QRS_T_mm": [round(p_mm, 1), round(qrs_mm, 1), round(t_mm, 1)],
                 "RV5_SV1_mV": [round(rv5_mv, 3), round(sv1_mv, 3)],
-                "QTCF": 0.049,
+                "QTCF_ms": int(qtcf_ms) if 'qtcf_ms' in locals() and qtcf_ms > 0 else 0,
             }
         }
 
@@ -1582,8 +1608,8 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
             "ST_ms": ST,
             "RR_ms": RR,
             "RV5_plus_SV1_mV": round(rv5_sv1_sum, 3),
-            "P_QRS_T_mm": [p_mm, qrs_mm, t_mm],
-            "QTCF": 0.049,
+            "P_QRS_T_mm": [round(p_mm, 1), round(qrs_mm, 1), round(t_mm, 1)],
+            "QTCF_ms": int(qtcf_ms) if 'qtcf_ms' in locals() and qtcf_ms > 0 else 0,
             "RV5_SV1_mV": [round(rv5_mv, 3), round(sv1_mv, 3)]
         }
 
