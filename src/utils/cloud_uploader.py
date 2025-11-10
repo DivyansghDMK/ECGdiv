@@ -427,6 +427,26 @@ class CloudUploader:
         except Exception as e:
             return {"status": "error", "message": str(e)}
     
+    def delete_file(self, key: str):
+        """Delete a file from S3 bucket"""
+        try:
+            import boto3
+            s3 = boto3.client(
+                's3',
+                aws_access_key_id=self.aws_access_key,
+                aws_secret_access_key=self.aws_secret_key,
+                region_name=self.s3_region
+            )
+            
+            # Delete the object
+            s3.delete_object(Bucket=self.s3_bucket, Key=key)
+            print(f"✅ Deleted from S3: {key}")
+            return {"status": "success", "message": f"Deleted {key}"}
+            
+        except Exception as e:
+            print(f"❌ S3 deletion error for {key}: {e}")
+            return {"status": "error", "message": str(e)}
+    
     def _upload_to_azure(self, file_path, metadata):
         """Upload to Azure Blob Storage"""
         try:

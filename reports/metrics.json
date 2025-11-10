@@ -603,5 +603,26 @@
       1.75,
       1.16
     ]
+  },
+  {
+    "timestamp": "2025-11-10 12:34:25",
+    "file": "/Users/deckmount/Downloads/modularecg-main/ECG_Report_20251110_123423.pdf",
+    "HR_bpm": 60,
+    "PR_ms": 176,
+    "QRS_ms": 65,
+    "QT_ms": 362,
+    "QTc_ms": 382,
+    "ST_ms": -2,
+    "RR_ms": 1000,
+    "Sokolow_Lyon_mV": 2.6,
+    "P_QRS_T_axes_deg": [
+      "--",
+      "0",
+      "--"
+    ],
+    "RV5_SV1_mV": [
+      1.74,
+      0.86
+    ]
   }
 ]

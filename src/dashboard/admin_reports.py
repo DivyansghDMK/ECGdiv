@@ -99,9 +99,16 @@ class AdminReportsDialog(QDialog):
         
         # Create Users tab
         self.users_tab = self.create_users_tab()
-        self.tabs.addTab(self.users_tab, "👥 Users")
+        self.tabs.addTab(self.users_tab, "Users")
         
         layout.addWidget(self.tabs)
+        
+        # Pre-load reports cache for patient lookup (runs in background)
+        try:
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(500, self.load_items)  # Load reports after 500ms
+        except Exception as e:
+            print(f"⚠️ Could not schedule cache preload: {e}")
 
     def create_reports_tab(self):
         """Create the Reports tab widget"""
@@ -160,9 +167,9 @@ class AdminReportsDialog(QDialog):
         # Summary cards - Modern design with icons and colors
         cards = QHBoxLayout()
         cards.setSpacing(16)
-        self.count_card = self._metric_card("Total Files", "0", "■", "#9C27B0")
-        self.size_card = self._metric_card("Total Size", "0 KB", "▲", "#FF9800")
-        self.latest_card = self._metric_card("Latest Upload", "–", "◆", "#00BCD4")
+        self.count_card = self._metric_card("Total Files", "0", "", "#9C27B0")
+        self.size_card = self._metric_card("Total Size", "0 KB", "", "#FF9800")
+        self.latest_card = self._metric_card("Latest Upload", "–", "", "#00BCD4")
         cards.addWidget(self.count_card, 1)
         cards.addWidget(self.size_card, 1)
         cards.addWidget(self.latest_card, 1)
@@ -294,8 +301,8 @@ class AdminReportsDialog(QDialog):
         # Summary cards for users - Modern design with icons and colors
         cards = QHBoxLayout()
         cards.setSpacing(16)
-        self.users_count_card = self._metric_card("Total Users", "0", "●", "#4CAF50")
-        self.latest_user_card = self._metric_card("Latest Registration", "–", "◆", "#2196F3")
+        self.users_count_card = self._metric_card("Total Users", "0", "", "#4CAF50")
+        self.latest_user_card = self._metric_card("Latest Registration", "–", "", "#2196F3")
         cards.addWidget(self.users_count_card, 1)
         cards.addWidget(self.latest_user_card, 1)
         cards.addStretch()
@@ -400,25 +407,48 @@ class AdminReportsDialog(QDialog):
         sidebar_layout.setSpacing(12)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Sidebar header with close button
+        # Sidebar header with close and delete buttons
         sidebar_header = QHBoxLayout()
-        sidebar_title = QLabel("📊 Patient Details")
+        sidebar_title = QLabel("Patient Details")
         sidebar_title.setStyleSheet("font-weight:bold;color:#ff6600;font-size:16px;")
         sidebar_header.addWidget(sidebar_title)
+        sidebar_header.addStretch()
         
-        self.close_sidebar_btn = QPushButton("✕")
+        # Delete user button
+        self.delete_user_btn = QPushButton("Delete User")
+        self.delete_user_btn.setStyleSheet("""
+            QPushButton {
+                background: #ff5722;
+                color: white;
+                border-radius: 8px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 6px 12px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: #f44336;
+            }
+            QPushButton:pressed {
+                background: #d32f2f;
+            }
+        """)
+        self.delete_user_btn.clicked.connect(self.delete_selected_user)
+        sidebar_header.addWidget(self.delete_user_btn)
+        
+        self.close_sidebar_btn = QPushButton("X")
         self.close_sidebar_btn.setFixedSize(32, 32)
         self.close_sidebar_btn.setStyleSheet("""
             QPushButton {
-                background: #f44336;
+                background: #9e9e9e;
                 color: white;
                 border-radius: 16px;
-                font-size: 18px;
+                font-size: 16px;
                 font-weight: bold;
                 border: none;
             }
             QPushButton:hover {
-                background: #d32f2f;
+                background: #757575;
             }
         """)
         self.close_sidebar_btn.clicked.connect(self.close_sidebar)
@@ -454,20 +484,21 @@ class AdminReportsDialog(QDialog):
         
         return tab
 
-    def _metric_card(self, title: str, value: str, icon: str = "📊", color: str = "#ff6600") -> QFrame:
-        """Create a modern, professional metric card with icon and gradient"""
+    def _metric_card(self, title: str, value: str, icon: str = "", color: str = "#ff6600") -> QFrame:
+        """Create a modern, clean metric card - NO ICONS to prevent rendering issues"""
         frame = QFrame()
         frame.setStyleSheet(f"""
             QFrame {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #ffffff, stop:0.5 {color}08, stop:1 {color}15);
-                border-radius: 16px;
-                border: none;
-                padding: 0px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ffffff, stop:1 {color}10);
+                border-radius: 12px;
+                border: 2px solid {color}40;
+                padding: 20px;
             }}
             QFrame:hover {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #ffffff, stop:0.5 {color}12, stop:1 {color}20);
+                border: 2px solid {color};
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ffffff, stop:1 {color}18);
             }}
         """)
         
@@ -475,74 +506,45 @@ class AdminReportsDialog(QDialog):
         from PyQt5.QtWidgets import QGraphicsDropShadowEffect
         from PyQt5.QtGui import QColor
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20)
+        shadow.setBlurRadius(15)
         shadow.setXOffset(0)
-        shadow.setYOffset(4)
-        shadow.setColor(QColor(0, 0, 0, 30))
+        shadow.setYOffset(3)
+        shadow.setColor(QColor(0, 0, 0, 25))
         frame.setGraphicsEffect(shadow)
         
         v = QVBoxLayout(frame)
-        v.setSpacing(12)
-        v.setContentsMargins(20, 20, 20, 20)
+        v.setSpacing(8)
+        v.setContentsMargins(0, 0, 0, 0)
         
-        # Top row: Icon + Title
-        top_row = QHBoxLayout()
-        top_row.setSpacing(8)
-        
-        icon_label = QLabel(icon)
-        icon_label.setStyleSheet(f"""
-            font-size: 32px;
-            background: {color};
-            border-radius: 12px;
-            padding: 8px;
-            min-width: 48px;
-            max-width: 48px;
-            min-height: 48px;
-            max-height: 48px;
-        """)
-        icon_label.setAlignment(Qt.AlignCenter)
-        top_row.addWidget(icon_label)
-        
+        # Title at top
         title_label = QLabel(title)
         title_label.setStyleSheet(f"""
             font-weight: bold;
             color: #666;
-            font-size: 13px;
-            letter-spacing: 0.5px;
+            font-size: 11px;
+            letter-spacing: 1px;
             text-transform: uppercase;
             background: transparent;
         """)
-        title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        top_row.addWidget(title_label, 1)
+        title_label.setAlignment(Qt.AlignLeft)
+        v.addWidget(title_label)
         
-        v.addLayout(top_row)
-        
-        # Value with accent bar
-        value_container = QFrame()
-        value_container.setStyleSheet(f"""
-            QFrame {{
-                background: transparent;
-                border-left: 4px solid {color};
-                padding-left: 12px;
-            }}
-        """)
-        value_layout = QVBoxLayout(value_container)
-        value_layout.setContentsMargins(0, 0, 0, 0)
-        
+        # Large value below
         val = QLabel(value)
         val.setStyleSheet(f"""
-            font-size: 36px;
+            font-size: 32px;
             font-weight: bold;
             color: {color};
             background: transparent;
+            margin-top: 8px;
         """)
         val.setAlignment(Qt.AlignLeft)
-        value_layout.addWidget(val)
+        v.addWidget(val)
         
-        v.addWidget(value_container)
+        v.addStretch(1)
         
         frame._value_label = val
-        frame.setMinimumHeight(140)
+        frame.setMinimumHeight(120)
         return frame
 
     def load_items(self):
@@ -983,6 +985,198 @@ class AdminReportsDialog(QDialog):
         self.sidebar_frame.setVisible(False)
         self.users_table.clearSelection()
     
+    def delete_selected_user(self):
+        """Delete the selected user from local database and cloud - WITH CONFIRMATION"""
+        try:
+            # Get currently selected user
+            row = self.users_table.currentRow()
+            if row < 0:
+                QMessageBox.warning(self, "No Selection", "Please select a user to delete.")
+                return
+            
+            users = getattr(self, '_filtered_users', [])
+            if row >= len(users):
+                return
+            
+            user = users[row]
+            username = user.get('username', 'Unknown')
+            full_name = user.get('full_name', 'Unknown')
+            serial = user.get('serial_number', '')
+            phone = user.get('phone', '')
+            
+            # CONFIRMATION DIALOG - Double check before deletion
+            confirm_msg = f"""
+⚠️ WARNING: This action CANNOT be undone!
+
+You are about to permanently delete:
+
+Patient: {full_name}
+Username: {username}
+Serial: {serial}
+Phone: {phone}
+
+This will delete:
+✓ User account from local database
+✓ User signup JSON from AWS S3
+✓ All patient reports from AWS S3
+✓ All ECG metrics from AWS S3
+
+Are you absolutely sure you want to delete this user?
+            """
+            
+            reply = QMessageBox.question(
+                self,
+                "⚠️ Confirm User Deletion",
+                confirm_msg,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No  # Default to No for safety
+            )
+            
+            if reply != QMessageBox.Yes:
+                print("❌ User deletion cancelled by admin")
+                return
+            
+            # Show progress dialog
+            progress_msg = QMessageBox(self)
+            progress_msg.setWindowTitle("Deleting User...")
+            progress_msg.setText(f"Deleting {full_name} from database and cloud...\n\nPlease wait...")
+            progress_msg.setStandardButtons(QMessageBox.NoButton)
+            progress_msg.show()
+            QApplication.processEvents()
+            
+            deleted_items = []
+            errors = []
+            
+            # Step 1: Delete from local users.json
+            try:
+                import json
+                users_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', 'users.json')
+                users_file = os.path.abspath(users_file)
+                
+                if os.path.exists(users_file):
+                    with open(users_file, 'r') as f:
+                        all_users = json.load(f)
+                    
+                    # Remove this user
+                    if username in all_users:
+                        del all_users[username]
+                        
+                        with open(users_file, 'w') as f:
+                            json.dump(all_users, f, indent=2)
+                        
+                        deleted_items.append(f"✓ Removed from local database (users.json)")
+                        print(f"✅ Deleted {username} from local users.json")
+                    else:
+                        errors.append(f"⚠️ User {username} not found in local database")
+                else:
+                    errors.append(f"⚠️ users.json file not found at {users_file}")
+                    
+            except Exception as e:
+                errors.append(f"❌ Error deleting from local database: {str(e)}")
+                print(f"❌ Local DB deletion error: {e}")
+            
+            # Step 2: Delete user signup JSON from S3
+            try:
+                # Find user signup JSON files on S3
+                result = self.cloud_uploader.list_reports(prefix="ecg-reports/")
+                if result.get('status') == 'success':
+                    items = result.get('items', [])
+                    signup_files = [
+                        item for item in items 
+                        if 'user_signup' in item['key'].lower() and item['key'].endswith('.json')
+                    ]
+                    
+                    # Download each signup JSON and check if it matches this user
+                    import requests
+                    for signup_file in signup_files:
+                        try:
+                            url_res = self.cloud_uploader.generate_presigned_url(signup_file['key'])
+                            if url_res.get('status') == 'success':
+                                r = requests.get(url_res['url'], timeout=5)
+                                if r.status_code == 200:
+                                    signup_data = r.json()
+                                    
+                                    # Check if this is the user we're deleting
+                                    if (signup_data.get('username') == username or 
+                                        signup_data.get('serial_number') == serial or
+                                        signup_data.get('phone') == phone):
+                                        
+                                        # Delete from S3
+                                        delete_result = self.cloud_uploader.delete_file(signup_file['key'])
+                                        if delete_result.get('status') == 'success':
+                                            deleted_items.append(f"✓ Deleted signup: {os.path.basename(signup_file['key'])}")
+                                            print(f"✅ Deleted S3 signup: {signup_file['key']}")
+                                        else:
+                                            errors.append(f"❌ Failed to delete {signup_file['key']}: {delete_result.get('message')}")
+                        except Exception as e:
+                            print(f"⚠️ Error checking signup file: {e}")
+                            continue
+                            
+            except Exception as e:
+                errors.append(f"❌ Error deleting signup files from S3: {str(e)}")
+                print(f"❌ S3 signup deletion error: {e}")
+            
+            # Step 3: Delete all patient reports from S3
+            try:
+                patient_reports = self.get_patient_reports(serial, phone)
+                
+                for report in patient_reports:
+                    try:
+                        report_key = report.get('key', '')
+                        if report_key:
+                            # Delete PDF
+                            delete_result = self.cloud_uploader.delete_file(report_key)
+                            if delete_result.get('status') == 'success':
+                                deleted_items.append(f"✓ Deleted report: {os.path.basename(report_key)}")
+                                print(f"✅ Deleted S3 report: {report_key}")
+                            
+                            # Delete corresponding JSON
+                            json_key = report_key.replace('.pdf', '.json')
+                            json_delete = self.cloud_uploader.delete_file(json_key)
+                            if json_delete.get('status') == 'success':
+                                deleted_items.append(f"✓ Deleted metrics: {os.path.basename(json_key)}")
+                                print(f"✅ Deleted S3 metrics: {json_key}")
+                    except Exception as e:
+                        print(f"⚠️ Error deleting report: {e}")
+                        continue
+                        
+            except Exception as e:
+                errors.append(f"❌ Error deleting reports from S3: {str(e)}")
+                print(f"❌ S3 reports deletion error: {e}")
+            
+            # Close progress dialog
+            progress_msg.close()
+            
+            # Show results
+            result_msg = f"User Deletion Complete!\n\n"
+            result_msg += f"Deleted {len(deleted_items)} items:\n\n"
+            result_msg += "\n".join(deleted_items[:10])  # Show first 10
+            
+            if len(deleted_items) > 10:
+                result_msg += f"\n... and {len(deleted_items) - 10} more items"
+            
+            if errors:
+                result_msg += f"\n\n⚠️ {len(errors)} Errors:\n"
+                result_msg += "\n".join(errors[:5])
+            
+            QMessageBox.information(self, "Deletion Complete", result_msg)
+            
+            # Refresh the users list
+            self.close_sidebar()
+            self.load_users()
+            
+            print(f"✅ User {username} deleted successfully. Total items deleted: {len(deleted_items)}")
+            
+        except Exception as e:
+            print(f"❌ Critical error in delete_selected_user: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(
+                self, 
+                "Deletion Error", 
+                f"Failed to delete user:\n\n{str(e)}\n\nPlease try again or contact support."
+            )
+    
     def _load_user_details_async(self, user):
         """Load user details asynchronously to prevent UI freeze - CRASH-PROOF"""
         try:
@@ -1023,58 +1217,84 @@ class AdminReportsDialog(QDialog):
             html_parts.append("""
                 <div style='background:linear-gradient(135deg, #ff6600 0%, #ff8533 100%); 
                             padding:16px; border-radius:8px; margin-bottom:16px;'>
-                    <b style='color:white; font-size:18px;'>👤 {full_name}</b>
+                    <b style='color:white; font-size:18px;'>{full_name}</b>
                     <div style='color:#ffe0cc; font-size:12px; margin-top:4px;'>Patient ID: {serial}</div>
                 </div>
             """.format(full_name=user.get('full_name', 'N/A'), serial=user.get('serial_number', 'N/A')))
             
-            # Basic Info Card
+            # Signup Details Card - Show ALL signup data
             html_parts.append("<div style='background:white; padding:12px; border-radius:8px; margin-bottom:12px; border:1px solid #e0e0e0;'>")
-            html_parts.append("<b style='color:#ff6600; font-size:14px;'>📋 Basic Information</b>")
+            html_parts.append("<b style='color:#ff6600; font-size:14px;'>Signup Details</b>")
+            html_parts.append("<div style='color:#666; font-size:11px; margin-top:2px;'>Complete registration information</div>")
             html_parts.append("<table style='width:100%; font-size:13px; margin-top:8px;'>")
-            info_items = [
-                ("Username", user.get('username', 'N/A')),
-                ("Phone", user.get('phone', 'N/A')),
-                ("Age", user.get('age', 'N/A')),
-                ("Gender", user.get('gender', 'N/A')),
-                ("Address", user.get('address', 'N/A')),
-                ("Registered", user.get('registered_at', 'N/A'))
-            ]
-            for i, (label, value) in enumerate(info_items):
+            
+            # Display ALL fields from the signup JSON (user dict)
+            signup_items = []
+            for key, value in user.items():
+                # Format the key for display (convert snake_case to Title Case)
+                display_key = key.replace('_', ' ').title()
+                signup_items.append((display_key, str(value)))
+            
+            for i, (label, value) in enumerate(signup_items):
                 bg = '#fff5e6' if i % 2 == 0 else 'white'
-                html_parts.append(f"<tr style='background:{bg};'><td style='padding:6px; font-weight:bold; width:40%;'>{label}:</td><td style='padding:6px;'>{value}</td></tr>")
+                # Truncate very long values
+                display_value = value if len(value) < 50 else value[:47] + '...'
+                html_parts.append(f"<tr style='background:{bg};'><td style='padding:6px; font-weight:bold; width:40%;'>{label}:</td><td style='padding:6px;'>{display_value}</td></tr>")
+            
             html_parts.append("</table></div>")
             
-            # ECG Metrics Card (if available)
-            if latest_metrics:
+            # ECG Metrics Card (if available) - Show ALL metrics from JSON
+            if latest_metrics and isinstance(latest_metrics, dict):
                 html_parts.append("<div style='background:white; padding:12px; border-radius:8px; margin-bottom:12px; border:1px solid #e0e0e0;'>")
-                html_parts.append("<b style='color:#ff6600; font-size:14px;'>💓 Latest ECG Metrics</b>")
-                html_parts.append("<div style='color:#666; font-size:11px; margin-top:2px;'>From most recent report</div>")
+                html_parts.append("<b style='color:#ff6600; font-size:14px;'>ECG Metrics (Latest Report)</b>")
                 
-                # Display key metrics in a grid
-                html_parts.append("<div style='display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px;'>")
+                # Show report date if available
+                report_date = latest_metrics.get('report_date', latest_metrics.get('Report_Date', 'Unknown'))
+                html_parts.append(f"<div style='color:#666; font-size:11px; margin-top:2px;'>Report Date: {report_date}</div>")
                 
-                metric_items = [
-                    ("Heart Rate", latest_metrics.get('Heart_Rate', '--'), "bpm", "#e74c3c"),
-                    ("PR Interval", latest_metrics.get('PR_Interval', '--'), "ms", "#3498db"),
-                    ("QRS Duration", latest_metrics.get('QRS_Duration', '--'), "ms", "#2ecc71"),
-                    ("QRS Axis", latest_metrics.get('QRS_Axis', '--'), "°", "#9b59b6"),
-                    ("ST Segment", latest_metrics.get('ST_Segment', '--'), "mV", "#f39c12"),
-                    ("QTc Interval", latest_metrics.get('QTc_Interval', '--'), "ms", "#1abc9c"),
-                    ("Rhythm", latest_metrics.get('Rhythm_Interpretation', '--'), "", "#e67e22"),
-                    ("Report Date", latest_metrics.get('report_date', '--'), "", "#95a5a6")
-                ]
+                # Display ALL metrics from the JSON in a comprehensive table
+                html_parts.append("<table style='width:100%; font-size:12px; margin-top:12px; border-collapse: collapse;'>")
                 
-                for label, value, unit, color in metric_items:
+                # Color coding for different metric types
+                colors = {
+                    'Heart_Rate': '#e74c3c', 'HR': '#e74c3c', 'BPM': '#e74c3c',
+                    'PR_Interval': '#3498db', 'PR': '#3498db',
+                    'QRS_Duration': '#2ecc71', 'QRS': '#2ecc71',
+                    'QRS_Axis': '#9b59b6', 'Axis': '#9b59b6',
+                    'ST_Segment': '#f39c12', 'ST': '#f39c12',
+                    'QTc_Interval': '#1abc9c', 'QT': '#1abc9c', 'QTc': '#1abc9c',
+                    'Rhythm': '#e67e22'
+                }
+                
+                # Sort and display all metrics
+                metric_count = 0
+                for key, value in sorted(latest_metrics.items()):
+                    # Skip nested objects and metadata fields
+                    if isinstance(value, (dict, list)) or key in ['report_date', 's3_key', '_metadata']:
+                        continue
+                    
+                    # Format the key for display
+                    display_key = key.replace('_', ' ').title()
+                    
+                    # Get color for this metric
+                    color = '#666'
+                    for color_key, color_value in colors.items():
+                        if color_key.lower() in key.lower():
+                            color = color_value
+                            break
+                    
+                    bg = '#f8f9fa' if metric_count % 2 == 0 else 'white'
                     html_parts.append(f"""
-                        <div style='background:linear-gradient(135deg, {color}15 0%, {color}05 100%); 
-                                    padding:10px; border-radius:6px; border-left:3px solid {color};'>
-                            <div style='font-size:11px; color:#666; font-weight:bold;'>{label}</div>
-                            <div style='font-size:16px; font-weight:bold; color:{color}; margin-top:4px;'>{value} {unit}</div>
-                        </div>
+                        <tr style='background:{bg};'>
+                            <td style='padding:8px; font-weight:bold; border-bottom:1px solid #e0e0e0; color:{color};'>{display_key}</td>
+                            <td style='padding:8px; border-bottom:1px solid #e0e0e0; text-align:right;'><b>{value}</b></td>
+                        </tr>
                     """)
+                    metric_count += 1
                 
-                html_parts.append("</div></div>")
+                html_parts.append("</table>")
+                html_parts.append(f"<div style='text-align:right; margin-top:8px; font-size:11px; color:#999;'>Total: {metric_count} metrics</div>")
+                html_parts.append("</div>")
             else:
                 html_parts.append("<div style='background:#fff3cd; padding:12px; border-radius:8px; margin-bottom:12px; border:1px solid #ffc107;'>")
                 html_parts.append("<b style='color:#ff6600;'>⚠️ No ECG metrics found</b><br>")
@@ -1234,11 +1454,15 @@ class AdminReportsDialog(QDialog):
             reports = self.get_patient_reports(serial, phone)
             
             if not reports:
+                print(f"❌ No reports found for patient")
                 return None
+            
+            print(f"📊 Found {len(reports)} reports, getting metrics from latest")
             
             # Get the most recent report
             latest_report = reports[0]
             report_key = latest_report.get('key', '')
+            print(f"📄 Latest report: {report_key}")
             
             # Look for corresponding JSON file
             if report_key.endswith('.pdf'):
@@ -1246,24 +1470,57 @@ class AdminReportsDialog(QDialog):
             else:
                 json_key = report_key + '.json'
             
-            # Download and parse JSON metrics
+            print(f"🔍 Looking for JSON: {json_key}")
+            
+            # Try S3 first
             try:
                 import requests
                 url_res = self.cloud_uploader.generate_presigned_url(json_key)
                 if url_res.get('status') == 'success':
+                    print(f"🌐 Downloading JSON from S3...")
                     r = requests.get(url_res['url'], timeout=5)
                     if r.status_code == 200:
                         metrics = r.json()
                         metrics['report_date'] = latest_report.get('last_modified', 'Unknown')
+                        print(f"✅ Loaded {len(metrics)} metrics from S3")
                         return metrics
+                    else:
+                        print(f"⚠️ S3 returned status {r.status_code}")
+                else:
+                    print(f"⚠️ Could not generate presigned URL: {url_res.get('message')}")
             except Exception as json_err:
-                print(f"Could not load JSON metrics: {json_err}")
-                return None
+                print(f"⚠️ S3 fetch failed: {json_err}")
             
+            # Fallback: Try local reports directory
+            try:
+                print(f"📁 Trying local file...")
+                local_json_name = os.path.basename(json_key)
+                local_paths = [
+                    os.path.join("reports", local_json_name),
+                    os.path.join("..", "reports", local_json_name),
+                    os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "reports", local_json_name)
+                ]
+                
+                for local_path in local_paths:
+                    if os.path.exists(local_path):
+                        print(f"✅ Found local JSON: {local_path}")
+                        with open(local_path, 'r') as f:
+                            metrics = json.load(f)
+                        metrics['report_date'] = latest_report.get('last_modified', 'Unknown')
+                        print(f"✅ Loaded {len(metrics)} metrics from local file")
+                        return metrics
+                
+                print(f"❌ JSON not found in any local path")
+            except Exception as local_err:
+                print(f"⚠️ Local file fetch failed: {local_err}")
+            
+            print(f"❌ Could not load metrics from S3 or local files")
             return None
             
         except Exception as e:
-            print(f"Error getting patient metrics: {e}")
+            print(f"❌ Error getting patient metrics: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def link_user_to_reports(self):

@@ -3672,34 +3672,40 @@ class ECGTestPage(QWidget):
             current_gain = self.settings_manager.get_wave_gain() / 10.0
             
             # Calculate appropriate Y-range with adaptive padding based on signal source
+            # INCREASED padding to prevent cropping in all modes
             if signal_source == "human_body":
-                # Use smaller padding for human body signals
-                base_padding = max(data_std * 2, 20)  # Reduced minimum padding
-                padding = base_padding * current_gain  # Scale by gain setting
+                # Generous padding for human body signals to prevent cropping
+                base_padding = max(data_std * 5, 100)  # Increased from 2 to 5
+                padding = base_padding * current_gain * 1.5  # Extra 1.5x multiplier
                 print(f"📊 Human body Y-range: base_padding={base_padding:.1f}, gain={current_gain:.1f}, final_padding={padding:.1f}")
             elif signal_source == "weak_body":
-                # Even smaller padding for very weak signals
-                base_padding = max(data_std * 1.5, 10)  # Minimal padding
-                padding = base_padding * current_gain  # Scale by gain setting
+                # Increased padding for weak signals
+                base_padding = max(data_std * 4, 50)  # Increased from 1.5 to 4
+                padding = base_padding * current_gain * 1.5  # Extra 1.5x multiplier
                 print(f"📊 Weak body Y-range: base_padding={base_padding:.1f}, gain={current_gain:.1f}, final_padding={padding:.1f}")
             else:
-                # Current logic for hardware
-                base_padding = max(data_std * 4, 200)  # Original padding
-                padding = base_padding * current_gain  # Scale by gain setting
+                # MUCH larger padding for hardware to prevent ANY cropping
+                base_padding = max(data_std * 6, 400)  # Increased from 4 to 6, min from 200 to 400
+                padding = base_padding * current_gain * 2.0  # Extra 2.0x multiplier
                 print(f"📊 Hardware Y-range: base_padding={base_padding:.1f}, gain={current_gain:.1f}, final_padding={padding:.1f}")
             
             if data_std > 0:
                 y_min = data_mean - padding
                 y_max = data_mean + padding
             else:
-                # Fallback: use percentile window
-                data_range = max(p99 - p1, 50 if signal_source in ["human_body", "weak_body"] else 300)
-                data_range = data_range * current_gain  # Scale by gain setting
+                # Fallback: use percentile window with generous range
+                data_range = max(p99 - p1, 100 if signal_source in ["human_body", "weak_body"] else 500)
+                data_range = data_range * current_gain * 1.5  # Scale by gain setting with extra room
                 y_min = data_mean - data_range / 2
                 y_max = data_mean + data_range / 2
             
-            # Apply the new Y-range using PyQtGraph
-            self.plot_widgets[plot_index].setYRange(y_min, y_max)
+            # Add extra margin to ensure NO cropping (20% padding beyond calculated range)
+            y_range = y_max - y_min
+            y_min = y_min - (y_range * 0.2)
+            y_max = y_max + (y_range * 0.2)
+            
+            # Apply the new Y-range using PyQtGraph with NO padding (we already added it)
+            self.plot_widgets[plot_index].setYRange(y_min, y_max, padding=0)
             
         except Exception as e:
             print(f"❌ Error updating adaptive Y-range: {e}")
@@ -5754,13 +5760,15 @@ class ECGTestPage(QWidget):
                             print(f"❌ Error updating sampling rate: {e}")
                         lines_processed += 1
                     else:
+                        # No data available, but don't break - wait for next read
                         break
                 except Exception as e:
                     print(f"❌ Error reading serial data: {e}")
-                    # Handle serial error through the reader's error handling system
+                    # Log error but don't stop - continuous flow
                     if hasattr(self, 'serial_reader') and hasattr(self.serial_reader, '_handle_serial_error'):
                         self.serial_reader._handle_serial_error(e)
-                    break
+                    # Continue to next iteration instead of breaking
+                    continue
 
             if lines_processed > 0:
                 # Detect signal source from a representative lead for adaptive scaling

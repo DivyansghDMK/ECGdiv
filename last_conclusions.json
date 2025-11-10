@@ -1,10 +1,10 @@
 {
-  "timestamp": "2025-11-10 10:00:08",
+  "timestamp": "2025-11-10 12:37:30",
   "findings": [
     "Normal heart rate",
     "Normal PR interval",
     "Normal QRS duration",
-    "Good heart rate variability"
+    "Moderate HRV"
   ],
   "recommendations": []
 }

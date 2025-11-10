@@ -3085,15 +3085,15 @@ class Dashboard(QWidget):
     def apply_dark_theme(self):
         """Apply dark theme styling to all UI components"""
         self.setStyleSheet("""
-                QWidget { background: #181818; color: #fff; }
-                QFrame { background: #232323 !important; border-radius: 16px; color: #fff; border: 2px solid #fff; }
-                QLabel { color: #fff; }
-                QPushButton { background: #333; color: #ff6600; border-radius: 10px; }
-                QPushButton:checked { background: #ff6600; color: #fff; }
-                QCalendarWidget QWidget { background: #232323; color: #fff; }
-                QCalendarWidget QAbstractItemView { background: #232323; color: #fff; selection-background-color: #444; selection-color: #ff6600; }
-                QTextEdit { background: #232323; color: #fff; border-radius: 12px; border: 2px solid #fff; }
-            """)
+            QWidget { background: #181818; color: #fff; }
+            QFrame { background: #232323 !important; border-radius: 16px; color: #fff; border: 2px solid #fff; }
+            QLabel { color: #fff; }
+            QPushButton { background: #333; color: #ff6600; border-radius: 10px; }
+            QPushButton:checked { background: #ff6600; color: #fff; }
+            QCalendarWidget QWidget { background: #232323; color: #fff; }
+            QCalendarWidget QAbstractItemView { background: #232323; color: #fff; selection-background-color: #444; selection-color: #ff6600; }
+            QTextEdit { background: #232323; color: #fff; border-radius: 12px; border: 2px solid #fff; }
+        """)
         self.dark_btn.setText("Light Mode")
         # Set matplotlib canvas backgrounds to dark
         self.ecg_canvas.axes.set_facecolor("#232323")
@@ -3109,7 +3109,7 @@ class Dashboard(QWidget):
         for calendar in self.findChildren(QCalendarWidget):
             calendar.setStyleSheet("background: #232323; color: #fff; border-radius: 12px; border: 2px solid #fff;")
         for txt in self.findChildren(QTextEdit):
-            txt.setStyleSheet("background: #232323; color: #fff; border-radius: 12px; border: 2px solid #fff;")
+                    txt.setStyleSheet("background: #232323; color: #fff; border-radius: 12px; border: 2px solid #fff;")
         # Update ECG test page theme if it exists
         if hasattr(self, 'ecg_test_page') and hasattr(self.ecg_test_page, 'update_metrics_frame_theme'):
             self.ecg_test_page.update_metrics_frame_theme(self.dark_mode, self.medical_mode)
