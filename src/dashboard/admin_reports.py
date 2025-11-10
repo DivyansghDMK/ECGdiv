@@ -816,6 +816,27 @@ class AdminReportsDialog(QDialog):
             
             user = users[row]
             
+            # Show loading state
+            self.user_details_text.setHtml("""
+                <div style='text-align:center; padding:40px; color:#ff6600;'>
+                    <b style='font-size:16px;'>⏳ Loading patient data...</b><br>
+                    <span style='font-size:12px; color:#666; margin-top:8px;'>
+                        Fetching ECG metrics and reports from cloud...
+                    </span>
+                </div>
+            """)
+            
+            # Process user selection
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(50, lambda: self._load_user_details_async(user))
+            
+        except Exception as e:
+            import traceback
+            self.user_details_text.setPlainText(f"Error loading details: {e}\n\n{traceback.format_exc()}")
+    
+    def _load_user_details_async(self, user):
+        """Load user details asynchronously to prevent UI freeze"""
+        try:
             # Fetch patient reports and metrics from S3
             serial = user.get('serial_number', '')
             phone = user.get('phone', '')
@@ -930,26 +951,70 @@ class AdminReportsDialog(QDialog):
             self.user_details_text.setPlainText(f"Error loading details: {e}\n\n{traceback.format_exc()}")
     
     def get_patient_reports(self, serial, phone):
-        """Get all reports for a specific patient from cached reports"""
+        """Get all reports for a specific patient by checking JSON metadata"""
         try:
             all_reports = getattr(self, '_cached_reports', [])
             patient_reports = []
             
-            # Filter reports by serial number or phone (check in filename or metadata)
+            print(f"🔍 Searching reports for patient: serial={serial}, phone={phone}")
+            
+            # First, try filename matching (fast)
             for report in all_reports:
                 key = report.get('key', '')
+                if not key.endswith('.pdf'):
+                    continue
+                    
                 # Check if serial or phone appears in the key/filename
-                if serial and serial in key:
+                if (serial and serial in key) or (phone and phone in key):
                     patient_reports.append(report)
-                elif phone and phone in key:
-                    patient_reports.append(report)
+                    print(f"✅ Found report by filename: {os.path.basename(key)}")
+            
+            # If no reports found by filename, check JSON metadata (slower but thorough)
+            if len(patient_reports) == 0 and (serial or phone):
+                print("📥 No filename matches, checking JSON metadata...")
+                import requests
+                
+                for report in all_reports:
+                    key = report.get('key', '')
+                    if not key.endswith('.pdf'):
+                        continue
+                    
+                    # Check corresponding JSON file
+                    json_key = key.replace('.pdf', '.json')
+                    try:
+                        url_res = self.cloud_uploader.generate_presigned_url(json_key)
+                        if url_res.get('status') == 'success':
+                            r = requests.get(url_res['url'], timeout=3)
+                            if r.status_code == 200:
+                                json_data = r.json()
+                                
+                                # Check if this report belongs to the patient
+                                json_serial = json_data.get('machine_serial', '')
+                                json_phone = json_data.get('user', {}).get('phone', '')
+                                json_name = json_data.get('user', {}).get('name', '')
+                                
+                                match = False
+                                if serial and json_serial and serial == json_serial:
+                                    match = True
+                                elif phone and json_phone and phone == json_phone:
+                                    match = True
+                                
+                                if match:
+                                    patient_reports.append(report)
+                                    print(f"✅ Found report by JSON metadata: {os.path.basename(key)}")
+                    except Exception as e:
+                        # Skip reports we can't fetch
+                        continue
             
             # Sort by date (newest first)
             patient_reports.sort(key=lambda x: x.get('last_modified', ''), reverse=True)
+            print(f"📊 Total reports found for patient: {len(patient_reports)}")
             return patient_reports
             
         except Exception as e:
-            print(f"Error getting patient reports: {e}")
+            print(f"❌ Error getting patient reports: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     def get_latest_patient_metrics(self, serial, phone):
