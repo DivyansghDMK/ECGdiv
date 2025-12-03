@@ -43803,7 +43803,7 @@
       "machine_serial": "",
       "heart_rate": ""
     }
-},
+  },
   {
     "local_path": "/Users/deckmount/Downloads/modularecg-main/ECG_Report_20251118_131634.pdf",
     "uploaded_at": "2025-11-18T13:16:39.129195",
@@ -44187,6 +44187,75 @@
       "filename": "ECG_Report_20251201_134708.pdf",
       "uploaded_at": "2025-12-01T13:47:10.777302",
       "file_size": 96297,
+      "file_type": ".pdf",
+      "patient_name": "Unknown",
+      "patient_age": "",
+      "report_date": "",
+      "machine_serial": "",
+      "heart_rate": ""
+    }
+  },
+  {
+    "local_path": "/Users/deckmount/Downloads/modularecg-main/ECG_Report_20251203_171901.pdf",
+    "uploaded_at": "2025-12-03T17:19:06.623171",
+    "service": "s3",
+    "result": {
+      "status": "success",
+      "service": "s3",
+      "url": "https://ecg-reports-deckmount-new.s3.us-east-1.amazonaws.com/ecg-reports/2025/12/03/ECG_Report_20251203_171901.pdf",
+      "key": "ecg-reports/2025/12/03/ECG_Report_20251203_171901.pdf",
+      "bucket": "ecg-reports-deckmount-new"
+    },
+    "metadata": {
+      "filename": "ECG_Report_20251203_171901.pdf",
+      "uploaded_at": "2025-12-03T17:19:03.964219",
+      "file_size": 122615,
+      "file_type": ".pdf",
+      "patient_name": "Unknown",
+      "patient_age": "",
+      "report_date": "",
+      "machine_serial": "",
+      "heart_rate": ""
+    }
+  },
+  {
+    "local_path": "/Users/deckmount/Downloads/modularecg-main/ECG_Report_20251203_172921.pdf",
+    "uploaded_at": "2025-12-03T17:29:25.064745",
+    "service": "s3",
+    "result": {
+      "status": "success",
+      "service": "s3",
+      "url": "https://ecg-reports-deckmount-new.s3.us-east-1.amazonaws.com/ecg-reports/2025/12/03/ECG_Report_20251203_172921.pdf",
+      "key": "ecg-reports/2025/12/03/ECG_Report_20251203_172921.pdf",
+      "bucket": "ecg-reports-deckmount-new"
+    },
+    "metadata": {
+      "filename": "ECG_Report_20251203_172921.pdf",
+      "uploaded_at": "2025-12-03T17:29:23.459072",
+      "file_size": 17513,
+      "file_type": ".pdf",
+      "patient_name": "Unknown",
+      "patient_age": "",
+      "report_date": "",
+      "machine_serial": "",
+      "heart_rate": ""
+    }
+  },
+  {
+    "local_path": "/Users/deckmount/Downloads/modularecg-main/ECG_Report_20251203_173626.pdf",
+    "uploaded_at": "2025-12-03T17:36:31.295147",
+    "service": "s3",
+    "result": {
+      "status": "success",
+      "service": "s3",
+      "url": "https://ecg-reports-deckmount-new.s3.us-east-1.amazonaws.com/ecg-reports/2025/12/03/ECG_Report_20251203_173626.pdf",
+      "key": "ecg-reports/2025/12/03/ECG_Report_20251203_173626.pdf",
+      "bucket": "ecg-reports-deckmount-new"
+    },
+    "metadata": {
+      "filename": "ECG_Report_20251203_173626.pdf",
+      "uploaded_at": "2025-12-03T17:36:28.800717",
+      "file_size": 122538,
       "file_type": ".pdf",
       "patient_name": "Unknown",
       "patient_age": "",
