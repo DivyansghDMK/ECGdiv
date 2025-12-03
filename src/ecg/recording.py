@@ -213,7 +213,7 @@ class SlidingPanel(QWidget):
             self.margin_size = getattr(self, "base_margin_size", self.margin_size)
             self.spacing_size = getattr(self, "base_spacing_size", self.spacing_size)
             self.layout.setContentsMargins(self.margin_size, self.margin_size, 
-                                          self.margin_size, self.margin_size)
+                                        self.margin_size, self.margin_size)
             self.layout.setSpacing(self.spacing_size)
             
             # Reposition panel on the right side if visible
