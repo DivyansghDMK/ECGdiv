@@ -123,7 +123,7 @@ class SlidingPanel(QWidget):
         super().__init__(parent)
         self.parent = parent
         
-        # Responsive sizing based on parent size (captured once at creation)
+        # Responsive sizing based on parent size
         if parent:
             parent_width = parent.width()
             parent_height = parent.height()
@@ -134,9 +134,6 @@ class SlidingPanel(QWidget):
         else:
             panel_width, panel_height = 600, 800
         
-        # Store base size so panel stays visually identical even when window is maximized
-        self.base_panel_width = panel_width
-        self.base_panel_height = panel_height
         self.panel_width = panel_width
         self.panel_height = panel_height
         
@@ -163,8 +160,8 @@ class SlidingPanel(QWidget):
         
         # Create responsive layout with dynamic margins
         self.layout = QVBoxLayout(self)
-        margin_size = max(12, min(30, int(panel_width * 0.04)))  # Initial margins
-        spacing_size = max(10, min(25, int(panel_height * 0.03)))  # Initial spacing
+        margin_size = max(12, min(30, int(panel_width * 0.04)))  # Responsive margins
+        spacing_size = max(10, min(25, int(panel_height * 0.03)))  # Responsive spacing
         
         self.layout.setContentsMargins(margin_size, margin_size, margin_size, margin_size)
         self.layout.setSpacing(spacing_size)
@@ -182,14 +179,11 @@ class SlidingPanel(QWidget):
         self.is_visible = False
         self.is_animating = False
         
-        # Store responsive parameters (frozen to initial values)
+        # Store responsive parameters
         self.margin_size = margin_size
         self.spacing_size = spacing_size
-        self.base_margin_size = margin_size
-        self.base_spacing_size = spacing_size
         
         # Add resize event handler for responsiveness
-        # Keep panel visually constant; only reposition when parent resizes
         if parent:
             parent.resizeEvent = self.parent_resize_handler
         
@@ -202,22 +196,33 @@ class SlidingPanel(QWidget):
         event.accept()
         
     def update_responsive_sizing(self):
-        """Keep panel size and internal spacing fixed; only move it with parent."""
         if self.parent:
-            # Ensure we keep the original visual size
-            self.panel_width = getattr(self, "base_panel_width", self.panel_width)
-            self.panel_height = getattr(self, "base_panel_height", self.panel_height)
-            self.setFixedSize(self.panel_width, self.panel_height)
-
-            # Restore original margins/spacing
-            self.margin_size = getattr(self, "base_margin_size", self.margin_size)
-            self.spacing_size = getattr(self, "base_spacing_size", self.spacing_size)
-            self.layout.setContentsMargins(self.margin_size, self.margin_size,
-                                           self.margin_size, self.margin_size)
-            self.layout.setSpacing(self.spacing_size)
-
-            # Reposition panel on the right side if visible
-            if self.is_visible:
+            parent_width = self.parent.width()
+            parent_height = self.parent.height()
+            
+            # Recalculate responsive sizes
+            new_width = min(max(int(parent_width * 0.30), 400), 900)
+            new_height = min(max(int(parent_height * 0.85), 500), 1000)
+            
+            if new_width != self.panel_width or new_height != self.panel_height:
+                self.panel_width = new_width
+                self.panel_height = new_height
+                
+                # Update margins and spacing
+                self.margin_size = max(12, min(30, int(new_width * 0.04)))
+                self.spacing_size = max(10, min(25, int(new_height * 0.03)))
+                
+                # Update layout
+                self.layout.setContentsMargins(self.margin_size, self.margin_size, 
+                                            self.margin_size, self.margin_size)
+                self.layout.setSpacing(self.spacing_size)
+                
+                # Resize panel
+                self.setFixedSize(new_width, new_height)
+                
+                # Reposition if visible
+                if self.is_visible:
+                    self.reposition_panel()
                 self.reposition_panel()
         
     def reposition_panel(self):
@@ -676,7 +681,7 @@ class ECGMenu(QGroupBox):
             }}
         """)
         title.setAlignment(Qt.AlignCenter)
-        # Prevent the header from stretching vertically when the parent window is maximized
+# Prevent the header from stretching vertically when the parent window is maximized
         title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(title)
 

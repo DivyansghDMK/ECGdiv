@@ -1,12 +1,10 @@
 {
-  "timestamp": "2025-12-01 18:15:39",
+"timestamp": "2025-11-18 15:41:35",
   "findings": [
-    "Tachycardia detected",
-    "Short PR interval",
+    "Normal heart rate",
+    "Normal PR interval",
     "Normal QRS duration",
     "Good heart rate variability"
   ],
-  "recommendations": [
-    "Consider relaxation techniques or consult physician"
-  ]
+  "recommendations": []
 }
