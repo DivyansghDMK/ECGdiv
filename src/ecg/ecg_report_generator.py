@@ -532,7 +532,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     # SAFEGUARD: If there is no real data (all core metrics are zero), ignore any
     # persisted conclusions and use the explicit "no data" conclusions instead.
     try:
-core_keys = ["HR", "PR", "QRS", "QT", "QTc", "ST"]
+        core_keys = ["HR", "PR", "QRS", "QT", "QTc", "ST"]
         all_zero = True
         for k in core_keys:
             v = data.get(k, 0)
