@@ -39,20 +39,27 @@ from PyQt5.QtWidgets import (
     QStackedLayout, QGridLayout, QSizePolicy, QMessageBox, QFormLayout, QLineEdit, QFrame, QApplication, QDialog
 )
 from PyQt5.QtGui import QFont, QColor
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QDateTime
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QDateTime 
 # --- CHANGED: Removed Matplotlib imports ---
 
 # --- ADDED: PyQtGraph is now used for all plotting ---
 import pyqtgraph as pg
+import re
+from collections import deque
+from typing import Deque, Dict, List, Tuple, Optional
 from ecg.recording import ECGMenu
 from scipy.signal import find_peaks
 from utils.settings_manager import SettingsManager
+from utils.localization import translate_text
 from .demo_manager import DemoManager
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 from functools import partial # For plot clicking
 
 # --- Configuration ---
-HISTORY_LENGTH = 1000
+# Increase history to keep longer segments visible in each frame.
+# At 500 Hz sampling this stores ~20 seconds, enough for 6-7 peaks
+# even at the slowest sweep speed.
+HISTORY_LENGTH = 10000
 NORMAL_HR_MIN, NORMAL_HR_MAX = 60, 100
 LEAD_LABELS = [
     "I", "II", "III", "aVR", "aVL", "aVF",
@@ -188,6 +195,189 @@ def generate_realistic_ecg_waveform(duration_seconds=10, sampling_rate=500, hear
     ecg += char["baseline"]
     
     return ecg, t
+
+# ============================================================================
+# NEW PACKET-BASED SERIAL PARSING LOGIC
+# ============================================================================
+
+# Packet parsing constants
+PACKET_SIZE = 22
+START_BYTE = 0xE8
+END_BYTE = 0x8E
+LEAD_NAMES_DIRECT = ["I", "II", "V1", "V2", "V3", "V4", "V5", "V6"]
+PACKET_REGEX = re.compile(r"(?i)(E8(?:[0-9A-F\s]{2,})?8E)")
+
+def hex_string_to_bytes(hex_str: str) -> bytes:
+    """Convert hex string to bytes"""
+    cleaned = re.sub(r"[^0-9A-Fa-f]", "", hex_str)
+    if len(cleaned) % 2 != 0:
+        raise ValueError("Hex string must have even length")
+    return bytes(int(cleaned[i : i + 2], 16) for i in range(0, len(cleaned), 2))
+
+def decode_lead(msb: int, lsb: int) -> Tuple[int, bool]:
+    """Decode lead value from MSB and LSB bytes"""
+    lower7 = lsb & 0x7F
+    upper5 = msb & 0x1F
+    value = (upper5 << 7) | lower7
+    connected = (msb & 0x20) != 0
+    return value, connected
+
+def parse_packet(raw: bytes) -> Dict[str, int]:
+    """Parse ECG packet and return dictionary of lead values"""
+    if len(raw) != PACKET_SIZE or raw[0] != START_BYTE or raw[-1] != END_BYTE:
+        return {}
+
+    lead_values: Dict[str, int] = {}
+    idx = 5  # first MSB position
+
+    print("---- New Packet ----")
+
+    for name in LEAD_NAMES_DIRECT:
+        msb = raw[idx]
+        lsb = raw[idx + 1]
+        idx += 2
+
+        value, connected = decode_lead(msb, lsb)
+
+        print(f"{name}: MSB={msb:02X}, LSB={lsb:02X}, value={value}, connected={connected}")
+
+        lead_values[name] = value
+
+    # Derived limb leads
+    lead_i = lead_values.get("I", 0)
+    lead_ii = lead_values.get("II", 0)
+
+    lead_values["III"] = lead_ii - lead_i
+    lead_values["aVR"] = -(lead_i + lead_ii) / 2
+    lead_values["aVL"] = (lead_i - lead_values["III"]) / 2
+    lead_values["aVF"] = (lead_ii + lead_values["III"]) / 2
+
+    print("Derived:", {
+        "III": lead_values["III"],
+        "aVR": lead_values["aVR"],
+        "aVL": lead_values["aVL"],
+        "aVF": lead_values["aVF"],
+    })
+
+    print("---------------------\n")
+
+    return lead_values
+
+class SerialStreamReader:
+    """Packet-based serial reader for ECG data - NEW IMPLEMENTATION"""
+    
+    def __init__(self, port: str, baudrate: int, timeout: float = 0.1):
+        if not SERIAL_AVAILABLE:
+            raise RuntimeError("pyserial is required for serial capture. pip install pyserial")
+        self.ser = serial.Serial(port=port, baudrate=baudrate, timeout=timeout)
+        self.buf = bytearray()
+        self.running = False
+        self.data_count = 0
+        self.error_count = 0
+        self.consecutive_errors = 0
+        self.last_error_time = 0
+        self.crash_logger = get_crash_logger()
+        self.user_details = {}  # For error reporting compatibility
+        print(f"🔌 SerialStreamReader initialized: Port={port}, Baud={baudrate}")
+
+    def close(self) -> None:
+        """Close serial connection"""
+        try:
+            self.running = False
+            self.ser.close()
+        except Exception:
+            pass
+
+    def start(self):
+        """Start data acquisition"""
+        print("🚀 Starting packet-based ECG data acquisition...")
+        self.ser.reset_input_buffer()
+        self.buf.clear()
+        self.running = True
+        print("✅ Packet-based ECG device started - waiting for data packets...")
+
+    def stop(self):
+        """Stop data acquisition"""
+        print("⏹️ Stopping packet-based ECG data acquisition...")
+        self.running = False
+        print(f"📊 Total data packets received: {self.data_count}")
+
+    def read_packets(self, max_packets: int = 50) -> List[Dict[str, int]]:
+        """Read and parse ECG packets from serial stream"""
+        if not self.running:
+            return []
+            
+        out: List[Dict[str, int]] = []
+        
+        try:
+            chunk = self.ser.read(1024)
+            if chunk:
+                self.buf.extend(chunk)
+
+            # Extract packets
+            while len(out) < max_packets:
+                start_idx = self.buf.find(bytes([START_BYTE]))
+                if start_idx == -1:
+                    self.buf.clear()
+                    break
+                if len(self.buf) - start_idx < PACKET_SIZE:
+                    if start_idx > 0:
+                        del self.buf[:start_idx]
+                    break
+                    
+                candidate = bytes(self.buf[start_idx : start_idx + PACKET_SIZE])
+                del self.buf[: start_idx + PACKET_SIZE]
+
+                if candidate[-1] != END_BYTE:
+                    continue
+
+                parsed = parse_packet(candidate)
+                if parsed:
+                    self.data_count += 1
+                    print(f"📡 [Packet #{self.data_count}] Received valid packet with {len(parsed)} leads")
+                    # Log each lead value as it is parsed
+                    for name, val in parsed.items():
+                        try:
+                            print(f"Serial data - Lead {name}: value={val}")
+                        except Exception:
+                            pass
+                    out.append(parsed)
+                    
+        except Exception as e:
+            self.error_count += 1
+            self.consecutive_errors += 1
+            error_msg = f"Packet parsing error: {e}"
+            print(f"❌ {error_msg}")
+            self.crash_logger.log_error(
+                message=error_msg,
+                exception=e,
+                category="SERIAL_ERROR"
+            )
+            
+        return out
+
+    def _handle_serial_error(self, error):
+        """Handle serial communication errors"""
+        current_time = time.time()
+        self.error_count += 1
+        self.consecutive_errors += 1
+        
+        error_msg = f"Serial communication error: {error}"
+        print(f"❌ {error_msg}")
+        
+        self.crash_logger.log_error(
+            message=error_msg,
+            exception=error,
+            category="SERIAL_ERROR"
+        )
+        
+        if self.consecutive_errors >= 5 and (current_time - self.last_error_time) > 10:
+            self.last_error_time = current_time
+            self.consecutive_errors = 0
+
+# ============================================================================
+# OLD SERIAL READER (COMMENTED OUT - KEPT FOR REFERENCE)
+# ============================================================================
 
 class SerialECGReader:
     def __init__(self, port, baudrate):
@@ -447,71 +637,71 @@ def calculate_st_segment(lead_signal, r_peaks, fs=500, j_offset_ms=40, st_offset
 
 # ------------------------ Calculate Arrhythmia ------------------------
 
-def detect_arrhythmia(heart_rate, qrs_duration, rr_intervals, pr_interval=None, p_peaks=None, r_peaks=None, ecg_signal=None):
-    """
-    Expanded arrhythmia detection logic for common clinical arrhythmias.
-    - Sinus Bradycardia: HR < 60, regular RR
-    - Sinus Tachycardia: HR > 100, regular RR
-    - Atrial Fibrillation: Irregular RR, absent/irregular P waves
-    - Atrial Flutter: Sawtooth P pattern (not robustly detected here)
-    - PAC: Early P, narrow QRS, compensatory pause (approximate)
-    - PVC: Early wide QRS, no P, compensatory pause (approximate)
-    - VT: HR > 100, wide QRS (>120ms), regular
-    - VF: Chaotic, no clear QRS, highly irregular
-    - Asystole: Flatline (very low amplitude, no R)
-    - SVT: HR > 150, narrow QRS, regular
-    - Heart Block: PR > 200 (1°), dropped QRS (2°), AV dissociation (3°)
-    """
-    try:
-        if not rr_intervals or len(rr_intervals) < 2:
-            return "Insufficient Data"
-        rr_std = np.std(rr_intervals)
-        rr_mean = np.mean(rr_intervals)
-        rr_reg = rr_std < 0.12  # Regular if std < 120ms
-        # Asystole: flatline (no R peaks, or very low amplitude)
-        if r_peaks is not None and len(r_peaks) < 1:
-            if ecg_signal is not None and np.ptp(ecg_signal) < 50:
-                return "Asystole (Flatline)"
-            return "No QRS Detected"
-        # VF: highly irregular, no clear QRS, rapid undulating
-        if r_peaks is not None and len(r_peaks) > 5:
-            if rr_std > 0.25 and np.ptp(ecg_signal) > 100 and heart_rate and heart_rate > 180:
-                return "Ventricular Fibrillation (VF)"
-        # VT: HR > 100, wide QRS (>120ms), regular
-        if heart_rate and heart_rate > 100 and qrs_duration and qrs_duration > 120 and rr_reg:
-            return "Ventricular Tachycardia (VT)"
-        # Sinus Bradycardia: HR < 60, regular
-        if heart_rate and heart_rate < 60 and rr_reg:
-            return "Sinus Bradycardia"
-        # Sinus Tachycardia: HR > 100, regular
-        if heart_rate and heart_rate > 100 and qrs_duration and qrs_duration <= 120 and rr_reg:
-            return "Sinus Tachycardia"
-        # SVT: HR > 150, narrow QRS, regular
-        if heart_rate and heart_rate > 150 and qrs_duration and qrs_duration <= 120 and rr_reg:
-            return "Supraventricular Tachycardia (SVT)"
-        # AFib: Irregular RR, absent/irregular P
-        if not rr_reg and (p_peaks is None or len(p_peaks) < len(r_peaks) * 0.5):
-            return "Atrial Fibrillation (AFib)"
-        # Atrial Flutter: (not robust, but if HR ~150, regular, and P waves rapid)
-        if heart_rate and 140 < heart_rate < 170 and rr_reg and p_peaks is not None and len(p_peaks) > len(r_peaks):
-            return "Atrial Flutter (suggestive)"
-        # PAC: Early P, narrow QRS, compensatory pause (approximate)
-        if p_peaks is not None and r_peaks is not None and len(p_peaks) > 1 and len(r_peaks) > 1:
-            pr_diffs = np.diff([r - p for p, r in zip(p_peaks, r_peaks)])
-            if np.any(pr_diffs < -0.15 * len(ecg_signal)) and qrs_duration and qrs_duration <= 120:
-                return "Premature Atrial Contraction (PAC)"
-        # PVC: Early wide QRS, no P, compensatory pause (approximate)
-        if qrs_duration and qrs_duration > 120 and (p_peaks is None or len(p_peaks) < len(r_peaks) * 0.5):
-            return "Premature Ventricular Contraction (PVC)"
-        # Heart Block: PR > 200ms (1°), dropped QRS (2°), AV dissociation (3°)
-        if pr_interval and pr_interval > 200:
-            return "Heart Block (1° AV)"
-        # If QRS complexes are missing (dropped beats)
-        if r_peaks is not None and len(r_peaks) < len(ecg_signal) / 500 * heart_rate * 0.7:
-            return "Heart Block (2°/3° AV, dropped QRS)"
-        return "None Detected"
-    except Exception as e:
-        return "Detecting..."
+# def detect_arrhythmia(heart_rate, qrs_duration, rr_intervals, pr_interval=None, p_peaks=None, r_peaks=None, ecg_signal=None):
+#     """
+#     Expanded arrhythmia detection logic for common clinical arrhythmias.
+#     - Sinus Bradycardia: HR < 60, regular RR
+#     - Sinus Tachycardia: HR > 100, regular RR
+#     - Atrial Fibrillation: Irregular RR, absent/irregular P waves
+#     - Atrial Flutter: Sawtooth P pattern (not robustly detected here)
+#     - PAC: Early P, narrow QRS, compensatory pause (approximate)
+#     - PVC: Early wide QRS, no P, compensatory pause (approximate)
+#     - VT: HR > 100, wide QRS (>120ms), regular
+#     - VF: Chaotic, no clear QRS, highly irregular
+#     - Asystole: Flatline (very low amplitude, no R)
+#     - SVT: HR > 150, narrow QRS, regular
+#     - Heart Block: PR > 200 (1°), dropped QRS (2°), AV dissociation (3°)
+#     """
+#     try:
+#         if not rr_intervals or len(rr_intervals) < 2:
+#             return "Insufficient Data"
+#         rr_std = np.std(rr_intervals)
+#         rr_mean = np.mean(rr_intervals)
+#         rr_reg = rr_std < 0.12  # Regular if std < 120ms
+#         # Asystole: flatline (no R peaks, or very low amplitude)
+#         if r_peaks is not None and len(r_peaks) < 1:
+#             if ecg_signal is not None and np.ptp(ecg_signal) < 50:
+#                 return "Asystole (Flatline)"
+#             return "No QRS Detected"
+#         # VF: highly irregular, no clear QRS, rapid undulating
+#         if r_peaks is not None and len(r_peaks) > 5:
+#             if rr_std > 0.25 and np.ptp(ecg_signal) > 100 and heart_rate and heart_rate > 180:
+#                 return "Ventricular Fibrillation (VF)"
+#         # VT: HR > 100, wide QRS (>120ms), regular
+#         if heart_rate and heart_rate > 100 and qrs_duration and qrs_duration > 120 and rr_reg:
+#             return "Ventricular Tachycardia (VT)"
+#         # Sinus Bradycardia: HR < 60, regular
+#         if heart_rate and heart_rate < 60 and rr_reg:
+#             return "Sinus Bradycardia"
+#         # Sinus Tachycardia: HR > 100, regular
+#         if heart_rate and heart_rate > 100 and qrs_duration and qrs_duration <= 120 and rr_reg:
+#             return "Sinus Tachycardia"
+#         # SVT: HR > 150, narrow QRS, regular
+#         if heart_rate and heart_rate > 150 and qrs_duration and qrs_duration <= 120 and rr_reg:
+#             return "Supraventricular Tachycardia (SVT)"
+#         # AFib: Irregular RR, absent/irregular P
+#         if not rr_reg and (p_peaks is None or len(p_peaks) < len(r_peaks) * 0.5):
+#             return "Atrial Fibrillation (AFib)"
+#         # Atrial Flutter: (not robust, but if HR ~150, regular, and P waves rapid)
+#         if heart_rate and 140 < heart_rate < 170 and rr_reg and p_peaks is not None and len(p_peaks) > len(r_peaks):
+#             return "Atrial Flutter (suggestive)"
+#         # PAC: Early P, narrow QRS, compensatory pause (approximate)
+#         if p_peaks is not None and r_peaks is not None and len(p_peaks) > 1 and len(r_peaks) > 1:
+#             pr_diffs = np.diff([r - p for p, r in zip(p_peaks, r_peaks)])
+#             if np.any(pr_diffs < -0.15 * len(ecg_signal)) and qrs_duration and qrs_duration <= 120:
+#                 return "Premature Atrial Contraction (PAC)"
+#         # PVC: Early wide QRS, no P, compensatory pause (approximate)
+#         if qrs_duration and qrs_duration > 120 and (p_peaks is None or len(p_peaks) < len(r_peaks) * 0.5):
+#             return "Premature Ventricular Contraction (PVC)"
+#         # Heart Block: PR > 200ms (1°), dropped QRS (2°), AV dissociation (3°)
+#         if pr_interval and pr_interval > 200:
+#             return "Heart Block (1° AV)"
+#         # If QRS complexes are missing (dropped beats)
+#         if r_peaks is not None and len(r_peaks) < len(ecg_signal) / 500 * heart_rate * 0.7:
+#             return "Heart Block (2°/3° AV, dropped QRS)"
+#         return "None Detected"
+#     except Exception as e:
+#         return "Detecting..."
 
 
 class SerialECGReader:
@@ -541,49 +731,70 @@ class SerialECGReader:
         self.running = False
         print(f"📊 Total data packets received: {self.data_count}")
 
+    # ========================================================================
+    # OLD read_value() METHOD - COMMENTED OUT
+    # Using new packet-based parsing logic instead
+    # ========================================================================
+    # def read_value(self):
+    #     """OLD METHOD - COMMENTED OUT - Using packet-based parsing now"""
+    #     if not self.running:
+    #         return None
+    #     try:
+    #         line_raw = self.ser.readline()
+    #         line_data = line_raw.decode('utf-8', errors='replace').strip()
+    #         
+    #         if line_data:
+    #             self.data_count += 1
+    #             # Print detailed data information
+    #             print(f"📡 [Packet #{self.data_count}] Raw data: '{line_data}' (Length: {len(line_data)})")
+    #             
+    #             # Parse and display ECG value
+    #             if line_data.isdigit():
+    #                 ecg_value = int(line_data[-3:])
+    #                 print(f"💓 ECG Value: {ecg_value} mV")
+    #                 return ecg_value
+    #             else:
+    #                 # Try to parse as multiple values (8-channel data)
+    #                 try:
+    #                     # Clean the line data - remove any non-numeric characters except spaces and minus signs
+    #                     import re
+    #                     cleaned_line = re.sub(r'[^\d\s\-]', ' ', line_data)
+    #                     values = [int(x) for x in cleaned_line.split() if x.strip() and x.replace('-', '').isdigit()]
+    #                     
+    #                     if len(values) >= 8:
+    #                         print(f"💓 8-Channel ECG Data: {values}")
+    #                         return values  # Return the list of 8 values
+    #                     elif len(values) == 1:
+    #                         print(f"💓 Single ECG Value: {values[0]} mV")
+    #                         return values[0]
+    #                     elif len(values) > 0:
+    #                         print(f"⚠️ Unexpected number of values: {len(values)} (expected 8)")
+    #                         return None
+    #                     else:
+    #                         return None
+    #                 except ValueError:
+    #                     print(f"⚠️ Non-numeric data received: '{line_data}'")
+    #         else:
+    #             print("⏳ No data received (timeout)")
+    #             
+    #     except Exception as e:
+    #         self._handle_serial_error(e)
+    #     return None
+    
     def read_value(self):
-        if not self.running:
-            return None
-        try:
-            line_raw = self.ser.readline()
-            line_data = line_raw.decode('utf-8', errors='replace').strip()
-            
-            if line_data:
-                self.data_count += 1
-                # Print detailed data information
-                print(f"📡 [Packet #{self.data_count}] Raw data: '{line_data}' (Length: {len(line_data)})")
-                
-                # Parse and display ECG value
-                if line_data.isdigit():
-                    ecg_value = int(line_data[-3:])
-                    print(f"💓 ECG Value: {ecg_value} mV")
-                    return ecg_value
-                else:
-                    # Try to parse as multiple values (8-channel data)
-                    try:
-                        # Clean the line data - remove any non-numeric characters except spaces and minus signs
-                        import re
-                        cleaned_line = re.sub(r'[^\d\s\-]', ' ', line_data)
-                        values = [int(x) for x in cleaned_line.split() if x.strip() and x.replace('-', '').isdigit()]
-                        
-                        if len(values) >= 8:
-                            print(f"💓 8-Channel ECG Data: {values}")
-                            return values  # Return the list of 8 values
-                        elif len(values) == 1:
-                            print(f"💓 Single ECG Value: {values[0]} mV")
-                            return values[0]
-                        elif len(values) > 0:
-                            print(f"⚠️ Unexpected number of values: {len(values)} (expected 8)")
-                            return None
-                        else:
-                            return None
-                    except ValueError:
-                        print(f"⚠️ Non-numeric data received: '{line_data}'")
-            else:
-                print("⏳ No data received (timeout)")
-                
-        except Exception as e:
-            self._handle_serial_error(e)
+        """
+        NEW METHOD - Compatibility wrapper that uses packet-based parsing
+        Returns data in the same format as old method for backward compatibility
+        """
+        # If this is actually a SerialStreamReader, use packet-based reading
+        if isinstance(self, SerialStreamReader):
+            packets = self.read_packets(max_packets=1)
+            if packets and len(packets) > 0:
+                # Convert packet dict to list format [I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6]
+                packet = packets[0]
+                lead_order = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
+                values = [packet.get(lead, 0) for lead in lead_order]
+                return values[:8] if len(values) >= 8 else values  # Return first 8 for compatibility
         return None
 
     def close(self):
@@ -785,6 +996,7 @@ def detect_arrhythmia(heart_rate, qrs_duration, rr_intervals, pr_interval=None, 
     - Asystole: Flatline (very low amplitude, no R)
     - SVT: HR > 150, narrow QRS, regular
     - Heart Block: PR > 200 (1°), dropped QRS (2°), AV dissociation (3°)
+    - Junctional Rhythm: HR 40-60 with absent or short PR and narrow QRS
     """
     try:
         if rr_intervals is None or len(rr_intervals) < 2:
@@ -799,11 +1011,23 @@ def detect_arrhythmia(heart_rate, qrs_duration, rr_intervals, pr_interval=None, 
             return "No QRS Detected"
         # VF: highly irregular, no clear QRS, rapid undulating
         if r_peaks is not None and len(r_peaks) > 5:
-            if rr_std > 0.25 and np.ptp(ecg_signal) > 100 and heart_rate and heart_rate > 180:
+            if rr_std > 0.25 and ecg_signal is not None and np.ptp(ecg_signal) > 100 and heart_rate and heart_rate > 180:
                 return "Ventricular Fibrillation (VF)"
         # VT: HR > 100, wide QRS (>120ms), regular
         if heart_rate and heart_rate > 100 and qrs_duration and qrs_duration > 120 and rr_reg:
             return "Ventricular Tachycardia (VT)"
+        # Junctional Rhythm: rate 40-60, narrow QRS, absent/short PR
+        if (
+            heart_rate and 40 <= heart_rate <= 60
+            and qrs_duration and qrs_duration <= 120
+            and rr_reg
+        ):
+            p_count = len(p_peaks) if p_peaks is not None else 0
+            r_count = len(r_peaks) if r_peaks is not None else max(1, len(rr_intervals) + 1)
+            p_ratio = p_count / max(r_count, 1)
+            pr_short = pr_interval is not None and pr_interval <= 120
+            if p_ratio < 0.4 or pr_short:
+                return "Junctional Rhythm (possible)"
         # Sinus Bradycardia: HR < 60, regular
         if heart_rate and heart_rate < 60 and rr_reg:
             return "Sinus Bradycardia"
@@ -831,7 +1055,7 @@ def detect_arrhythmia(heart_rate, qrs_duration, rr_intervals, pr_interval=None, 
         if pr_interval and pr_interval > 200:
             return "Heart Block (1° AV)"
         # If QRS complexes are missing (dropped beats)
-        if r_peaks is not None and len(r_peaks) < len(ecg_signal) / 500 * heart_rate * 0.7:
+        if r_peaks is not None and ecg_signal is not None and len(r_peaks) < len(ecg_signal) / 500 * heart_rate * 0.7:
             return "Heart Block (2°/3° AV, dropped QRS)"
         return "None Detected"
     except Exception as e:
@@ -871,6 +1095,12 @@ class ECGTestPage(QWidget):
         self.stacked_widget = stacked_widget  # Save reference for navigation
 
         self.settings_manager = SettingsManager()
+        # Ensure AC filter starts at "off" each launch (Set Filter default)
+        try:
+            self.settings_manager.set_setting("filter_ac", "off")
+        except Exception as e:
+            print(f"⚠️ Could not enforce default AC filter state: {e}")
+        self.current_language = self.settings_manager.get_setting("system_language", "en")
     
         # Initialize demo manager
         self.demo_manager = DemoManager(self)
@@ -890,6 +1120,10 @@ class ECGTestPage(QWidget):
         # Initialize data buffers with memory management
         self.data = [np.zeros(HISTORY_LENGTH, dtype=np.float32) for _ in range(12)]
         
+        # Track overlay state and current layout (12:1 vs 6:2)
+        self._overlay_active = False
+        self._current_overlay_layout = None
+        
         # Memory management
         self.max_buffer_size = 10000  # Maximum buffer size to prevent memory issues
         self.memory_check_interval = 1000  # Check memory every 1000 updates
@@ -908,6 +1142,7 @@ class ECGTestPage(QWidget):
         self.sampler = SamplingRateCalculator()
         # self.demo_fs = 500  # Increased sampling rate for more realistic ECG
         self.sampling_rate = 500  # Default sampling rate for expanded lead view
+        self._latest_rhythm_interpretation = "Analyzing Rhythm..."
 
         # Initialize time tracking for elapsed time
         self.start_time = None
@@ -957,8 +1192,8 @@ class ECGTestPage(QWidget):
         menu_layout.setSpacing(8)  # Reduced spacing between buttons
         
         # Header - Make it more compact
-        header_label = QLabel("ECG Control Panel")
-        header_label.setStyleSheet("""
+        self.menu_header_label = QLabel("ECG Control Panel")
+        self.menu_header_label.setStyleSheet("""
             QLabel {
                 color: #ff6600;
                 font-size: 18px;  /* Reduced from 24px */
@@ -971,9 +1206,9 @@ class ECGTestPage(QWidget):
                 border-radius: 8px;  /* Reduced from 10px */
             }
         """)
-        header_label.setAlignment(Qt.AlignCenter)
-        header_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        menu_layout.addWidget(header_label)
+        self.menu_header_label.setAlignment(Qt.AlignCenter)
+        self.menu_header_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        menu_layout.addWidget(self.menu_header_label)
         
         # Create ECGMenu instance to use its methods
         self.ecg_menu = ECGMenu(parent=self, dashboard=self.stacked_widget.parent())
@@ -1011,12 +1246,12 @@ class ECGTestPage(QWidget):
             ("System Setup", self.ecg_menu.show_system_setup, "#6f42c1"),
             ("Load Default", self.ecg_menu.show_load_default, "#20c997"),
             ("Version", self.ecg_menu.show_version_info, "#e83e8c"),
-            ("Factory Maintain", self.ecg_menu.show_factory_maintain, "#dc3545"),
             ("Exit", self.ecg_menu.show_exit, "#495057")
         ]
         
         # Create buttons and store them in a list - Make them much smaller
         created_buttons = []
+        self.menu_buttons = []
         for text, handler, color in ecg_menu_buttons:
             btn = QPushButton(text)
             btn.setMinimumHeight(40)  # Reduced from 60px - Much more compact
@@ -1025,8 +1260,11 @@ class ECGTestPage(QWidget):
             btn.clicked.connect(handler)
             created_buttons.append(btn)
             menu_layout.addWidget(btn)
+            self.menu_buttons.append((btn, text))
 
         menu_layout.addStretch(1)
+
+        self.apply_language(self.current_language)
 
         # Style menu buttons AFTER they're created - Compact styling
         for i, btn in enumerate(created_buttons):
@@ -1081,12 +1319,9 @@ class ECGTestPage(QWidget):
         
         created_buttons[7].clicked.disconnect()
         created_buttons[7].clicked.connect(self.ecg_menu.show_version_info)
-        
-        created_buttons[8].clicked.disconnect()
-        created_buttons[8].clicked.connect(self.ecg_menu.show_factory_maintain)
 
-        created_buttons[9].clicked.disconnect()
-        created_buttons[9].clicked.connect(self.ecg_menu.show_exit)
+        created_buttons[8].clicked.disconnect()
+        created_buttons[8].clicked.connect(self.ecg_menu.show_exit)
 
         # Recording Toggle Button Section - Make it compact
         recording_frame = QFrame()
@@ -1146,7 +1381,7 @@ class ECGTestPage(QWidget):
         """)
         
         # Connect demo toggle to demo manager
-        self.demo_toggle.toggled.connect(self.demo_manager.toggle_demo_mode)
+        self.demo_toggle.toggled.connect(self.on_demo_toggle_changed)
         
         recording_layout.addWidget(self.demo_toggle)
 
@@ -1464,6 +1699,51 @@ class ECGTestPage(QWidget):
                 from PyQt5.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "No Data", f"No ECG data available for Lead {lead_name}")
 
+    def tr(self, text):
+        return translate_text(text, getattr(self, "current_language", "en"))
+
+    def update_demo_toggle_label(self):
+        if hasattr(self, 'demo_toggle') and self.demo_toggle:
+            key = "Demo: ON" if self.demo_toggle.isChecked() else "Demo: OFF"
+            self.demo_toggle.setText(self.tr(key))
+
+    def on_demo_toggle_changed(self, checked):
+        self.update_demo_toggle_label()
+        self.demo_manager.toggle_demo_mode(checked)
+
+    def apply_language(self, language=None):
+        if language:
+            self.current_language = language
+        translator = self.tr
+        if hasattr(self, 'menu_header_label'):
+            self.menu_header_label.setText(translator("ECG Control Panel"))
+        if hasattr(self, 'menu_buttons'):
+            for btn, label in self.menu_buttons:
+                btn.setText(translator(label))
+        self.update_demo_toggle_label()
+        if hasattr(self, 'capture_screen_btn') and self.capture_screen_btn:
+            self.capture_screen_btn.setText(translator("Capture Screen"))
+        if hasattr(self, 'recording_toggle') and self.recording_toggle:
+            self.recording_toggle.setText(translator("Record Screen"))
+        for attr, key in [
+            ('start_btn', "Start"),
+            ('stop_btn', "Stop"),
+            ('ports_btn', "Ports"),
+            ('generate_report_btn', "Generate Report"),
+            ('twelve_leads_btn', "12:1"),
+            ('six_leads_btn', "6:2"),
+            ('back_btn', "Back"),
+        ]:
+            btn = getattr(self, attr, None)
+            if btn:
+                btn.setText(translator(key))
+        if hasattr(self, 'demo_toggle') and self.demo_toggle:
+            self.update_demo_toggle_label()
+        if hasattr(self, 'ecg_menu') and self.ecg_menu:
+            update_lang = getattr(self.ecg_menu, "update_language", None)
+            if callable(update_lang):
+                update_lang(self.current_language)
+
     def calculate_12_leads_from_8_channels(self, channel_data):
         """
         Calculate 12-lead ECG from 8-channel hardware data
@@ -1522,12 +1802,12 @@ class ECGTestPage(QWidget):
                 aVR = 0.0
 
             try:
-                aVL = (I - III) / 2.0
+                aVL = (I - III) / 2
             except Exception:
                 aVL = 0.0
 
             try:
-                aVF = (II + III) / 2.0
+                aVF = (II + III) / 2
             except Exception:
                 aVF = 0.0
 
@@ -1999,7 +2279,7 @@ class ECGTestPage(QWidget):
     def calculate_pr_interval(self, lead_data):
         """Calculate PR interval from P wave to QRS complex - LIVE"""
         try:
-            # Early exit: no real signal → 0
+            # Early exit: no real signal 
             try:
                 arr = np.asarray(lead_data, dtype=float)
                 if len(arr) < 200 or np.all(arr == 0) or np.std(arr) < 0.05:
@@ -2060,7 +2340,7 @@ class ECGTestPage(QWidget):
     def calculate_qrs_duration(self, lead_data):
         """Calculate QRS complex duration - LIVE"""
         try:
-            # Early exit: no real signal → 0
+            # Early exit: no real signal 
             try:
                 arr = np.asarray(lead_data, dtype=float)
                 if len(arr) < 200 or np.all(arr == 0) or np.std(arr) < 0.1:
@@ -2070,9 +2350,11 @@ class ECGTestPage(QWidget):
             
             # Apply bandpass filter to enhance R-peaks (0.5-40 Hz)
             from scipy.signal import butter, filtfilt, find_peaks
-            fs = 500
+            fs = 80.0  # match hardware default so windows scale correctly
             if hasattr(self, 'sampler') and hasattr(self.sampler, 'sampling_rate') and self.sampler.sampling_rate:
                 fs = float(self.sampler.sampling_rate)
+                if fs <= 0:
+                    fs = 80.0
             
             nyquist = fs / 2
             low = 0.5 / nyquist
@@ -2090,18 +2372,42 @@ class ECGTestPage(QWidget):
             
             if len(peaks) > 0:
                 qrs_durations = []
+                deriv = np.gradient(filtered_signal)
+                deriv_std = np.std(deriv)
+                deriv_thresh = max(0.1 * deriv_std, 1e-4)
+                search_window = int(0.12 * fs)  # allow ±120 ms for low sample rates
                 for r_peak in peaks[:min(5, len(peaks))]:  # Analyze first 5 beats
                     # Find Q and S points around R peak
-                    search_window = int(0.08 * fs)  # 80ms window
                     start_idx = max(0, r_peak - search_window)
                     end_idx = min(len(filtered_signal), r_peak + search_window)
                     
                     segment = filtered_signal[start_idx:end_idx]
                     if len(segment) > 0:
-                        # Find Q point (minimum before R)
-                        q_idx = start_idx + np.argmin(segment[:r_peak-start_idx]) if r_peak > start_idx else start_idx
-                        # Find S point (minimum after R)
-                        s_idx = r_peak + np.argmin(segment[r_peak-start_idx:]) if r_peak < end_idx else end_idx
+                        rel_r = r_peak - start_idx
+                        pre_slice = slice(0, max(rel_r, 1))
+                        post_slice = slice(rel_r, len(segment))
+                        
+                        # Derivative-based onset: last low-slope point before R
+                        if pre_slice.stop > 0:
+                            pre_deriv = np.abs(deriv[start_idx:r_peak])
+                            low_grad_pre = np.where(pre_deriv < deriv_thresh)[0]
+                            if low_grad_pre.size > 0:
+                                q_idx = start_idx + int(low_grad_pre[-1])
+                            else:
+                                q_idx = start_idx + int(np.argmin(segment[pre_slice]))
+                        else:
+                            q_idx = start_idx
+                        
+                        # Derivative-based offset: first low-slope point after R
+                        if post_slice.stop - post_slice.start > 1:
+                            post_deriv = np.abs(deriv[r_peak:end_idx])
+                            low_grad_post = np.where(post_deriv < deriv_thresh)[0]
+                            if low_grad_post.size > 0:
+                                s_idx = r_peak + int(low_grad_post[0])
+                            else:
+                                s_idx = r_peak + int(np.argmin(segment[post_slice]))
+                        else:
+                            s_idx = end_idx
                         
                         qrs_duration = (s_idx - q_idx) / fs * 1000  # Convert to ms
                         if 40 <= qrs_duration <= 200:  # Reasonable QRS duration
@@ -2415,6 +2721,10 @@ class ECGTestPage(QWidget):
             print(f"Error getting current metrics: {e}")
             return {}
 
+    def get_latest_rhythm_interpretation(self):
+        """Expose latest arrhythmia interpretation string for the dashboard."""
+        return getattr(self, '_latest_rhythm_interpretation', "Analyzing Rhythm...")
+
     def update_plot_y_range(self, plot_index):
         """Update Y-axis range for a specific plot using robust stats to avoid cropping"""
         try:
@@ -2496,6 +2806,8 @@ class ECGTestPage(QWidget):
                 self.demo_manager.on_settings_changed(key, value)
             
             print(f"Settings applied and titles updated for {key} = {value}")
+        elif key == "system_language":
+            self.apply_language(value)
 
     def update_all_lead_titles(self):
         """Update all lead titles with current speed and gain settings"""
@@ -3521,13 +3833,23 @@ class ECGTestPage(QWidget):
                         })
 
                     # --- Arrhythmia detection ---
-                    arrhythmia_result = detect_arrhythmia(heart_rate, qrs_duration, rr_intervals)
+                    arrhythmia_result = detect_arrhythmia(
+                        heart_rate,
+                        qrs_duration,
+                        rr_intervals,
+                        pr_interval=pr_interval,
+                        p_peaks=p_peaks,
+                        r_peaks=r_peaks,
+                        ecg_signal=centered
+                    )
                     arrhythmia_label.setText(arrhythmia_result)
+                    self._latest_rhythm_interpretation = arrhythmia_result
                 else:
                     pr_label.setText("-- ms")
                     qrs_label.setText("-- ms")
                     qtc_label.setText("-- ms")
                     arrhythmia_label.setText("0")
+                    self._latest_rhythm_interpretation = "Analyzing Rhythm..."
             else:
                 line.set_data([], [])
                 ax.set_xlim(0, 1)
@@ -3808,15 +4130,18 @@ class ECGTestPage(QWidget):
             # Calculate appropriate Y-range with adaptive padding based on signal source.
             # Goal: make peaks visually bigger but still avoid cropping by using robust stats.
             if signal_source == "human_body":
-                # Moderate padding – was very large before, which made peaks look tiny.
-                base_padding = max(data_std * 2.5, 80)
-                padding = base_padding * current_gain
-                print(f"📊 Human body Y-range: base_padding={base_padding:.1f}, gain={current_gain:.1f}, pre_clip_padding={padding:.1f}")
+                # Lock to fixed range for human body motion (no adaptive scaling)
+                y_min = -600
+                y_max = 600
+                base_padding = None
+                padding = None
+                print("📊 Human body Y-range locked to ±600 for stability")
             elif signal_source == "weak_body":
-                # Slightly more padding for very weak signals
-                base_padding = max(data_std * 2.0, 60)
-                padding = base_padding * current_gain
-                print(f"📊 Weak body Y-range: base_padding={base_padding:.1f}, gain={current_gain:.1f}, pre_clip_padding={padding:.1f}")
+                y_min = -400
+                y_max = 400
+                base_padding = None
+                padding = None
+                print("📊 Weak body Y-range locked to ±400 for stability")
             else:
                 # Hardware / unknown – keep more room but less than before so peaks are taller.
                 base_padding = max(data_std * 3.0, 250)
@@ -3831,20 +4156,24 @@ class ECGTestPage(QWidget):
                 if padding < min_padding:
                     padding = min_padding
             
-            if data_std > 0:
-                y_min = data_mean - padding
-                y_max = data_mean + padding
+            if signal_source not in ["human_body", "weak_body"]:
+                if data_std > 0:
+                    y_min = data_mean - padding
+                    y_max = data_mean + padding
+                else:
+                    y_min = -400
+                    y_max = 400
             else:
                 # Fallback: use percentile window with reasonable range
                 data_range = max(p99 - p1, 80 if signal_source in ["human_body", "weak_body"] else 300)
                 data_range = data_range * current_gain
                 y_min = data_mean - data_range / 2
                 y_max = data_mean + data_range / 2
-            
-            # Add small extra margin (10%) to avoid cropping but keep waveform tall
-            y_range = y_max - y_min
-            y_min = y_min - (y_range * 0.1)
-            y_max = y_max + (y_range * 0.1)
+                
+                # Add extra margin to ensure NO cropping (20% padding beyond calculated range)
+                y_range = y_max - y_min
+                y_min = y_min - (y_range * 0.2)
+                y_max = y_max + (y_range * 0.2)
             
             # Apply the new Y-range using PyQtGraph with NO padding (we already added it)
             self.plot_widgets[plot_index].setYRange(y_min, y_max, padding=0)
@@ -3898,6 +4227,7 @@ class ECGTestPage(QWidget):
         try:
             from scipy.signal import butter, filtfilt, savgol_filter, medfilt, wiener
             from scipy.ndimage import gaussian_filter1d
+            from ecg.ecg_filters import apply_ecg_filters_from_settings
             import numpy as np
             
             if len(signal_data) < 10:  # Need minimum data for filtering
@@ -3909,8 +4239,24 @@ class ECGTestPage(QWidget):
             # 1. Remove DC offset (baseline drift) - more aggressive
             signal = signal - np.mean(signal)
             
-            # 2. Medical-grade bandpass filter (0.5-30 Hz) - tighter range for cleaner signal
-            fs = 500  # Sampling frequency
+            # 2. Apply AC/EMG/DFT filters based on user settings from SettingsManager
+            # This applies filters in correct order: DFT -> EMG -> AC
+            sampling_rate = getattr(self, 'demo_fs', 500)  # Get sampling rate, default 500Hz
+            if hasattr(self, 'sampler') and hasattr(self.sampler, 'sampling_rate'):
+                try:
+                    sampling_rate = float(self.sampler.sampling_rate)
+                except:
+                    pass
+            
+            # Apply user-configured AC/EMG/DFT filters
+            signal = apply_ecg_filters_from_settings(
+                signal=signal,
+                sampling_rate=sampling_rate,
+                settings_manager=self.settings_manager
+            )
+            
+            # 3. Medical-grade bandpass filter (0.5-30 Hz) - tighter range for cleaner signal
+            fs = sampling_rate  # Use actual sampling rate
             nyquist = fs / 2
             
             # Low-pass filter to remove high-frequency noise (>30 Hz) - more aggressive
@@ -3918,10 +4264,7 @@ class ECGTestPage(QWidget):
             b_low, a_low = butter(6, low_cutoff, btype='low')  # Increased order to 6
             signal = filtfilt(b_low, a_low, signal)
             
-            # High-pass filter to remove DC and low-frequency drift (<0.5 Hz)
-            high_cutoff = 0.5 / nyquist
-            b_high, a_high = butter(6, high_cutoff, btype='high')  # Increased order to 6
-            signal = filtfilt(b_high, a_high, signal)
+            # Note: High-pass filter is now handled by DFT filter, so we skip it here
             
             # 3. Wiener filter for medical-grade noise reduction
             if len(signal) > 5:
@@ -4129,8 +4472,9 @@ class ECGTestPage(QWidget):
                 pass
             
             try:
-                self.serial_reader = SerialECGReader(port, baud_int)
-                # Pass user details to serial reader for error reporting
+                # Use new packet-based SerialStreamReader instead of old SerialECGReader
+                self.serial_reader = SerialStreamReader(port, baud_int)
+                # Pass user details to serial reader for error reporting (already set in __init__)
                 if hasattr(self, 'user_details'):
                     self.serial_reader.user_details = self.user_details
                 self.serial_reader.start()
@@ -4144,8 +4488,9 @@ class ECGTestPage(QWidget):
                 if auto_port:
                     print(f"🔄 Trying auto-detected port: {auto_port}")
                     try:
-                        self.serial_reader = SerialECGReader(auto_port, baud_int)
-                        # Pass user details to serial reader for error reporting
+                        # Use new packet-based SerialStreamReader instead of old SerialECGReader
+                        self.serial_reader = SerialStreamReader(auto_port, baud_int)
+                        # Pass user details to serial reader for error reporting (already set in __init__)
                         if hasattr(self, 'user_details'):
                             self.serial_reader.user_details = self.user_details
                         self.serial_reader.start()
@@ -4708,28 +5053,20 @@ class ECGTestPage(QWidget):
                     "ST": st,
                 })
 
-            # Pull patient details similar to dashboard button
+            # Load patient details from centralized all_patients.json database
             patient = None
             try:
                 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-                data_file = os.path.join(base_dir, "ecg_data.txt")
-                if os.path.exists(data_file):
-                    with open(data_file, "r") as f:
-                        lines = [l for l in f.readlines() if l.strip()]
-                    if lines:
-                        last = lines[-1]
-                        parts = [x.strip() for x in last.split(",")]
-                        if len(parts) >= 5:
-                            organisation, doctor, name, age, gender = parts[:5]
-                            first, *rest = name.split()
-                            patient = {
-                                "first_name": first,
-                                "last_name": " ".join(rest),
-                                "age": age,
-                                "gender": gender,
-                                "doctor": doctor,
-                            }
-            except Exception:
+                patients_db_file = os.path.join(base_dir, "all_patients.json")
+                
+                if os.path.exists(patients_db_file):
+                    with open(patients_db_file, "r") as jf:
+                        all_patients = json.load(jf)
+                        if all_patients.get("patients") and len(all_patients["patients"]) > 0:
+                            # Get the last patient (most recent)
+                            patient = all_patients["patients"][-1]
+            except Exception as e:
+                print(f"⚠️ Error loading patient data: {e}")
                 patient = None
 
             # Always stamp current date/time
@@ -4741,6 +5078,14 @@ class ECGTestPage(QWidget):
 
             # Generate report with patient details
             generate_ecg_report(filename, ecg_data, lead_img_paths, None, self, patient)
+
+            # Append history
+            try:
+                from dashboard.history_window import append_history_entry
+                append_history_entry(patient, filename, report_type="12 Lead")
+            except Exception:
+                import traceback
+                traceback.print_exc()
 
             QMessageBox.information(self, "Success", f"ECG Report generated successfully!\nSaved as: {filename}")
 
@@ -4939,10 +5284,14 @@ class ECGTestPage(QWidget):
     # ------------------------------------ 12 leads overlay --------------------------------------------
 
     def twelve_leads_overlay(self):
-        # If overlay is already shown, hide it and restore original layout
-        if hasattr(self, '_overlay_active') and self._overlay_active:
+        if getattr(self, "_overlay_active", False):
+            # If we're already in 12:1, treat this as a toggle (close overlay)
+            if getattr(self, "_current_overlay_layout", None) == "12x1":
+                self._restore_original_layout()
+                self._current_overlay_layout = None
+                return
+            # If some other overlay (e.g. 6:2) is active, restore first, then switch
             self._restore_original_layout()
-            return
         
         # Store the original plot area layout
         self._store_original_layout()
@@ -4953,8 +5302,9 @@ class ECGTestPage(QWidget):
         # Replace the plot area with overlay
         self._replace_plot_area_with_overlay()
         
-        # Mark overlay as active
+        # Mark overlay as active and record layout type
         self._overlay_active = True
+        self._current_overlay_layout = "12x1"
 
         self._apply_current_overlay_mode()
 
@@ -5161,7 +5511,7 @@ class ECGTestPage(QWidget):
             seconds_to_show = baseline_seconds * seconds_scale
             
             # Use hardware sampling rate (80 Hz)
-            sampling_rate = 80.0
+            sampling_rate = 500.0
             samples_to_show = int(sampling_rate * seconds_to_show)
             
             # Return the calculated samples (same as main plots - no buffer size limit)
@@ -5187,6 +5537,7 @@ class ECGTestPage(QWidget):
         
         # Check if demo mode is active
         is_demo_mode = hasattr(self, 'demo_toggle') and self.demo_toggle.isChecked()
+        
         target_buffer_len = self._get_overlay_target_buffer_len(is_demo_mode)
         
         for idx, lead in enumerate(self.leads):
@@ -5197,7 +5548,7 @@ class ECGTestPage(QWidget):
                     data = np.array([])
                 line = self._overlay_lines[idx]
                 ax = self._overlay_axes[idx]
-                
+
                 # Ensure overlay line length matches current buffer size
                 buffer_len = target_buffer_len
                 try:
@@ -5223,8 +5574,28 @@ class ECGTestPage(QWidget):
                     else:
                         data_segment = data
                     
+                    # Optional AC notch filtering (match main 12-lead grid view)
+                    filtered_segment = np.array(data_segment, dtype=float)
+                    try:
+                        # Prefer hardware sampling rate; fall back to stored sampling_rate or 500 Hz
+                        sampling_rate = 500.0
+                        try:
+                            if hasattr(self, "sampler") and hasattr(self.sampler, "sampling_rate") and self.sampler.sampling_rate:
+                                sampling_rate = float(self.sampler.sampling_rate)
+                            elif hasattr(self, "sampling_rate") and self.sampling_rate:
+                                sampling_rate = float(self.sampling_rate)
+                        except Exception:
+                            pass
+                        
+                        ac_setting = self.settings_manager.get_setting("filter_ac", "off") if hasattr(self, "settings_manager") else "off"
+                        if ac_setting and ac_setting != "off" and len(filtered_segment) >= 10:
+                            from ecg.ecg_filters import apply_ac_filter
+                            filtered_segment = apply_ac_filter(filtered_segment, sampling_rate, ac_setting)
+                    except Exception as filter_error:
+                        print(f"⚠️ Overlay AC filter skipped for lead {lead}: {filter_error}")
+                    
                     # Center data around baseline before applying gain
-                    centered_raw = np.array(data_segment, dtype=float)
+                    centered_raw = np.array(filtered_segment, dtype=float)
                     if centered_raw.size:
                         finite_mask = np.isfinite(centered_raw)
                         if np.any(finite_mask):
@@ -5234,7 +5605,7 @@ class ECGTestPage(QWidget):
                         centered_raw = np.nan_to_num(centered_raw, copy=False)
                     else:
                         centered_raw = np.zeros(buffer_len, dtype=float)
-                    
+
                     # Apply current gain setting (match main 12-lead grid)
                     gain_factor = float(self.settings_manager.get_wave_gain()) / 10.0  # 10mm/mV baseline
                     
@@ -5622,8 +5993,10 @@ class ECGTestPage(QWidget):
         if hasattr(self, '_overlay_canvas'):
             delattr(self, '_overlay_canvas')
         
-        # Mark overlay as inactive
+        # Mark overlay as inactive and clear current layout type
         self._overlay_active = False
+        if hasattr(self, "_current_overlay_layout"):
+            self._current_overlay_layout = None
         
         # Force redraw of original plots
         self.redraw_all_plots()
@@ -5634,7 +6007,6 @@ class ECGTestPage(QWidget):
         # If overlay is already shown, hide it and restore original layout
         if hasattr(self, '_overlay_active') and self._overlay_active:
             self._restore_original_layout()
-            return
         
         # Store the original plot area layout
         self._store_original_layout()
@@ -5645,8 +6017,9 @@ class ECGTestPage(QWidget):
         # Replace the plot area with overlay
         self._replace_plot_area_with_overlay()
         
-        # Mark overlay as active
+        # Mark overlay as active and record layout type
         self._overlay_active = True
+        self._current_overlay_layout = "6x2"
 
         self._apply_current_overlay_mode()
 
@@ -5848,6 +6221,7 @@ class ECGTestPage(QWidget):
         
         # Check if demo mode is active
         is_demo_mode = hasattr(self, 'demo_toggle') and self.demo_toggle.isChecked()
+        
         target_buffer_len = self._get_overlay_target_buffer_len(is_demo_mode)
         
         # Define the two columns of leads
@@ -5893,8 +6267,27 @@ class ECGTestPage(QWidget):
                     else:
                         data_segment = data
                     
+                    # Optional AC notch filtering (match main 12-lead grid view)
+                    filtered_segment = np.array(data_segment, dtype=float)
+                    try:
+                        sampling_rate = 500.0
+                        try:
+                            if hasattr(self, "sampler") and hasattr(self.sampler, "sampling_rate") and self.sampler.sampling_rate:
+                                sampling_rate = float(self.sampler.sampling_rate)
+                            elif hasattr(self, "sampling_rate") and self.sampling_rate:
+                                sampling_rate = float(self.sampling_rate)
+                        except Exception:
+                            pass
+                        
+                        ac_setting = self.settings_manager.get_setting("filter_ac", "off") if hasattr(self, "settings_manager") else "off"
+                        if ac_setting and ac_setting != "off" and len(filtered_segment) >= 10:
+                            from ecg.ecg_filters import apply_ac_filter
+                            filtered_segment = apply_ac_filter(filtered_segment, sampling_rate, ac_setting)
+                    except Exception as filter_error:
+                        print(f"⚠️ 6:2 overlay AC filter skipped for lead {lead}: {filter_error}")
+                    
                     # Center data around baseline before applying gain
-                    centered_raw = np.array(data_segment, dtype=float)
+                    centered_raw = np.array(filtered_segment, dtype=float)
                     if centered_raw.size:
                         finite_mask = np.isfinite(centered_raw)
                         if np.any(finite_mask):
@@ -5904,7 +6297,7 @@ class ECGTestPage(QWidget):
                         centered_raw = np.nan_to_num(centered_raw, copy=False)
                     else:
                         centered_raw = np.zeros(buffer_len, dtype=float)
-                    
+
                     # Apply current gain setting (match main 12-lead grid)
                     gain_factor = float(self.settings_manager.get_wave_gain()) / 10.0  # 10mm/mV baseline
                     
@@ -6041,23 +6434,37 @@ class ECGTestPage(QWidget):
                         continue
                 return
 
-            # SERIAL branch
-            lines_processed = 0
-            max_attempts = 20
-            while lines_processed < max_attempts:
+            # SERIAL branch - NEW PACKET-BASED PARSING
+            packets_processed = 0
+            max_packets = 50  # Read up to 50 packets per update cycle
+            
+            # Check if we're using the new packet-based reader
+            is_packet_reader = isinstance(self.serial_reader, SerialStreamReader)
+            
+            if is_packet_reader:
+                # NEW: Use packet-based reading
                 try:
-                    all_8_leads = self.serial_reader.read_value()
-                    if all_8_leads:
-                        all_12_leads = self.calculate_12_leads_from_8_channels(all_8_leads)
-                        for i in range(len(self.leads)):
+                    packets = self.serial_reader.read_packets(max_packets=max_packets)
+                    
+                    for packet in packets:
+                        # Packet contains all 12 leads: I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6
+                        # Map packet dict to our lead order
+                        lead_order = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
+                        
+                        for i, lead_name in enumerate(lead_order):
                             try:
-                                if i < len(self.data) and i < len(all_12_leads):
+                                if i < len(self.data) and lead_name in packet:
+                                    value = packet[lead_name]
+                                    # Update circular buffer
                                     self.data[i] = np.roll(self.data[i], -1)
-                                    smoothed_value = self.apply_realtime_smoothing(all_12_leads[i], i)
+                                    # Apply smoothing
+                                    smoothed_value = self.apply_realtime_smoothing(value, i)
                                     self.data[i][-1] = smoothed_value
                             except Exception as e:
-                                print(f"❌ Error updating data buffer {i}: {e}")
+                                print(f"❌ Error updating data buffer {i} ({lead_name}): {e}")
                                 continue
+                        
+                        # Update sampling rate counter
                         try:
                             if hasattr(self, 'sampler'):
                                 sampling_rate = self.sampler.add_sample()
@@ -6065,19 +6472,50 @@ class ECGTestPage(QWidget):
                                     self.metric_labels['sampling_rate'].setText(f"{sampling_rate:.1f} Hz")
                         except Exception as e:
                             print(f"❌ Error updating sampling rate: {e}")
-                        lines_processed += 1
-                    else:
-                        # No data available, but don't break - wait for next read
-                        break
+                        
+                        packets_processed += 1
+                        
                 except Exception as e:
-                    print(f"❌ Error reading serial data: {e}")
-                    # Log error but don't stop - continuous flow
+                    print(f"❌ Error reading serial packets: {e}")
                     if hasattr(self, 'serial_reader') and hasattr(self.serial_reader, '_handle_serial_error'):
                         self.serial_reader._handle_serial_error(e)
-                    # Continue to next iteration instead of breaking
-                    continue
-
-            if lines_processed > 0:
+            else:
+                # FALLBACK: Old method for compatibility (if SerialECGReader is still used)
+                lines_processed = 0
+                max_attempts = 20
+                while lines_processed < max_attempts:
+                    try:
+                        all_8_leads = self.serial_reader.read_value()
+                        if all_8_leads:
+                            all_12_leads = self.calculate_12_leads_from_8_channels(all_8_leads)
+                            for i in range(len(self.leads)):
+                                try:
+                                    if i < len(self.data) and i < len(all_12_leads):
+                                        self.data[i] = np.roll(self.data[i], -1)
+                                        smoothed_value = self.apply_realtime_smoothing(all_12_leads[i], i)
+                                        self.data[i][-1] = smoothed_value
+                                except Exception as e:
+                                    print(f"❌ Error updating data buffer {i}: {e}")
+                                    continue
+                            try:
+                                if hasattr(self, 'sampler'):
+                                    sampling_rate = self.sampler.add_sample()
+                                    if sampling_rate > 0 and hasattr(self, 'metric_labels') and 'sampling_rate' in self.metric_labels:
+                                        self.metric_labels['sampling_rate'].setText(f"{sampling_rate:.1f} Hz")
+                            except Exception as e:
+                                print(f"❌ Error updating sampling rate: {e}")
+                            lines_processed += 1
+                        else:
+                            break
+                    except Exception as e:
+                        print(f"❌ Error reading serial data: {e}")
+                        if hasattr(self, 'serial_reader') and hasattr(self.serial_reader, '_handle_serial_error'):
+                            self.serial_reader._handle_serial_error(e)
+                        continue
+                packets_processed = lines_processed
+            
+            # Update plots if we processed any packets
+            if packets_processed > 0:
                 # Detect signal source from a representative lead for adaptive scaling
                 signal_source = "hardware"  # Default
                 try:
@@ -6111,7 +6549,7 @@ class ECGTestPage(QWidget):
                             scaled_data = self.apply_adaptive_gain(self.data[i], signal_source, gain_factor)
 
                             # Build time axis and apply wave-speed scaling
-                            sampling_rate = 80.0  # Hardware sampling rate
+                            sampling_rate = 500.0  # Hardware sampling rate
                             
                             # Calculate how many samples to show based on wave speed
                             # 25 mm/s → 10s window
@@ -6126,11 +6564,22 @@ class ECGTestPage(QWidget):
                             else:
                                 data_slice = raw_data
                             
+                            # Optional AC notch filtering based on "Set Filter" selection.
+                            # Keeps wave peaks intact while removing 50/60 Hz power noise for machine serial data.
+                            filtered_slice = np.array(data_slice, dtype=float)
+                            try:
+                                ac_setting = self.settings_manager.get_setting("filter_ac", "off") if self.settings_manager else "off"
+                                if ac_setting and ac_setting != "off" and len(filtered_slice) >= 10:
+                                    from ecg.ecg_filters import apply_ac_filter
+                                    filtered_slice = apply_ac_filter(filtered_slice, sampling_rate, ac_setting)
+                            except Exception as filter_error:
+                                print(f"⚠️ Skipping AC filter for lead {self.leads[i] if hasattr(self, 'leads') else i}: {filter_error}")
+                            
                             # Apply wave gain similar to demo mode: center first, then multiply by gain
                             gain_factor = self.settings_manager.get_wave_gain() / 10.0
                             
                             # Center the slice to keep baseline around zero (same as demo mode)
-                            centered_slice = np.array(data_slice, dtype=float)
+                            centered_slice = np.array(filtered_slice, dtype=float)
                             slice_center = np.nanmedian(centered_slice)
                             if np.isfinite(slice_center):
                                 centered_slice = centered_slice - slice_center
@@ -6141,7 +6590,7 @@ class ECGTestPage(QWidget):
                             
                             n = len(scaled_data)
                             time_axis = np.arange(n, dtype=float) / sampling_rate
-
+                            
                             # Avoid cropping: small padding and explicit x-range
                             try:
                                 vb = self.plot_widgets[i].getViewBox()

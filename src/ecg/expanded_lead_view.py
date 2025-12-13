@@ -15,6 +15,8 @@ from PyQt5.QtCore import Qt, QTimer
 from scipy.signal import find_peaks, butter, filtfilt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+import matplotlib.patches as patches
+from .arrhythmia_detector import ArrhythmiaDetector
 
 class PQRSTAnalyzer:
     """Analyze ECG signal to detect P, Q, R, S, T waves and calculate metrics"""
@@ -55,33 +57,94 @@ class PQRSTAnalyzer:
             return {'r_peaks': [], 'p_peaks': [], 'q_peaks': [], 's_peaks': [], 't_peaks': []}
     
     def _filter_signal(self, signal):
-        """Apply bandpass filter to ECG signal"""
+        """Apply bandpass filter to ECG signal with improved error handling"""
         try:
+            if len(signal) < 10:
+                return signal
+            
+            # Ensure sampling rate is valid
+            if self.fs <= 0 or self.fs > 10000:
+                print(f"⚠️ Invalid sampling rate: {self.fs} Hz, using default 80 Hz")
+                self.fs = 80.0
+            
             nyq = 0.5 * self.fs
-            low = 0.5 / nyq
-            high = 40 / nyq
+            # Ensure filter frequencies are valid
+            low = max(0.01, 0.5 / nyq)  # At least 0.5 Hz
+            high = min(0.49, 40 / nyq)  # At most 40 Hz, but below Nyquist
+            
+            if low >= high:
+                # Invalid filter parameters, return unfiltered signal
+                print(f"⚠️ Invalid filter parameters: low={low}, high={high}, fs={self.fs}")
+                return signal
+            
             b, a = butter(4, [low, high], btype='band')
-            return filtfilt(b, a, signal)
-        except:
+            
+            # Check if signal is long enough for filtering
+            if len(signal) < max(len(b), len(a)) * 3:
+                # Signal too short for filtering, return as is
+                return signal
+            
+            filtered = filtfilt(b, a, signal)
+            return filtered
+        except Exception as e:
+            print(f"⚠️ Error filtering signal: {e}, returning unfiltered signal")
             return signal
     
     def _detect_r_peaks(self, signal):
-        """Detect R peaks using Pan-Tompkins algorithm"""
+        """Detect R peaks using Pan-Tompkins algorithm with improved sensitivity for serial data"""
         try:
+            if len(signal) < 10:
+                return []
+            
+            # Filter the signal first to reduce noise
+            filtered_signal = self._filter_signal(signal)
+            
             # Differentiate
-            diff = np.ediff1d(signal)
+            diff = np.ediff1d(filtered_signal)
             # Square
             squared = diff ** 2
-            # Moving window integration
-            window_size = int(0.15 * self.fs)
+            
+            # Moving window integration - adaptive window size based on sampling rate
+            window_size = max(3, int(0.15 * self.fs))
+            if window_size > len(squared):
+                window_size = len(squared) // 4
+            if window_size < 1:
+                window_size = 1
+            
             mwa = np.convolve(squared, np.ones(window_size)/window_size, mode='same')
             
-            # Find peaks
-            threshold = np.mean(mwa) + 0.5 * np.std(mwa)
-            min_distance = int(0.2 * self.fs)
-            peaks, _ = find_peaks(mwa, height=threshold, distance=min_distance)
+            # Adaptive threshold - more lenient for serial data
+            mean_mwa = np.mean(mwa)
+            std_mwa = np.std(mwa)
+            
+            # Use lower threshold for better sensitivity (0.3 instead of 0.5)
+            threshold = mean_mwa + 0.3 * std_mwa
+            
+            # Minimum distance between peaks - adaptive based on expected heart rate
+            # Allow for heart rates from 40-200 bpm
+            min_distance_samples = max(3, int(0.2 * self.fs))  # At least 200ms between peaks
+            
+            # Try to find peaks with the threshold
+            peaks, properties = find_peaks(mwa, height=threshold, distance=min_distance_samples)
+            
+            # If no peaks found, try with lower threshold
+            if len(peaks) == 0 and len(mwa) > 0:
+                # Lower threshold to 0.1 * std for very sensitive detection
+                lower_threshold = mean_mwa + 0.1 * std_mwa
+                peaks, _ = find_peaks(mwa, height=lower_threshold, distance=min_distance_samples)
+            
+            # Additional check: if we have very few peaks but signal has variation, try even more lenient
+            if len(peaks) < 2 and len(mwa) > 50:
+                # Check if signal has significant variation (not flatline)
+                signal_variation = np.std(filtered_signal)
+                if signal_variation > 0.01:  # Signal has variation
+                    # Use even lower threshold
+                    very_low_threshold = mean_mwa + 0.05 * std_mwa
+                    peaks, _ = find_peaks(mwa, height=very_low_threshold, distance=max(2, min_distance_samples // 2))
+            
             return peaks
-        except:
+        except Exception as e:
+            print(f"Error in R peak detection: {e}")
             return []
     
     def _detect_p_waves(self, signal, r_peaks):
@@ -277,225 +340,6 @@ class MetricsCard(QFrame):
         if isinstance(self.layout().itemAt(0).widget(), QLabel):
             self.layout().itemAt(0).widget().setFont(QFont("Segoe UI", int(self._base_title_pt * scale), QFont.Bold))
 
-class ArrhythmiaDetector:
-    """Detect various types of arrhythmias from ECG data"""
-    
-    def __init__(self, sampling_rate=500):
-        self.fs = sampling_rate
-    
-    def detect_arrhythmias(self, signal, r_peaks):
-        """Detect various arrhythmias"""
-        arrhythmias = []
-        
-        if len(r_peaks) < 3:
-            return ["Insufficient data for arrhythmia detection."]
-        
-        # Calculate RR intervals
-        rr_intervals = np.diff(r_peaks) / self.fs * 1000  # in ms
-        
-        # Check for specific arrhythmias first
-        if self._is_atrial_fibrillation(signal, r_peaks):
-            arrhythmias.append("Possible Atrial Fibrillation")
-        if self._is_ventricular_tachycardia(rr_intervals):
-            arrhythmias.append("Possible Ventricular Tachycardia")
-        if self._is_premature_ventricular_contractions(signal, r_peaks):
-            arrhythmias.append("Premature Ventricular Contractions Detected")
-        
-        # If no major arrhythmia, check rate-based conditions
-        if not arrhythmias:
-            if self._is_bradycardia(rr_intervals):
-                arrhythmias.append("Sinus Bradycardia")
-            elif self._is_tachycardia(rr_intervals):
-                arrhythmias.append("Sinus Tachycardia")
-
-        # If still nothing, check for NSR
-        if not arrhythmias and self._is_normal_sinus_rhythm(rr_intervals):
-            return ["Normal Sinus Rhythm"]
-            
-        return arrhythmias if arrhythmias else ["Unspecified Irregular Rhythm"]
-    
-    def detect_arrhythmias_with_probabilities(self, signal, r_peaks, window_size=2.0):
-        """
-        Detect arrhythmias with probability scores over time windows
-        Returns a dictionary with time windows and probability scores for each arrhythmia type
-        """
-        if len(r_peaks) < 3:
-            return {}
-        
-        # Calculate RR intervals
-        rr_intervals = np.diff(r_peaks) / self.fs * 1000  # in ms
-        time_points = r_peaks[:-1] / self.fs  # Time points for each RR interval
-        
-        # Initialize heat map data structure
-        arrhythmia_types = [
-            "Normal Sinus Rhythm",
-            "Atrial Fibrillation",
-            "Ventricular Tachycardia",
-            "Premature Ventricular Contractions",
-            "Sinus Bradycardia",
-            "Sinus Tachycardia",
-            "Irregular Rhythm"
-        ]
-        
-        heat_map_data = {arr_type: [] for arr_type in arrhythmia_types}
-        
-        # Analyze in sliding windows
-        window_samples = int(window_size * self.fs)
-        num_windows = max(1, len(signal) // window_samples)
-        
-        for i in range(num_windows):
-            start_idx = i * window_samples
-            end_idx = min((i + 1) * window_samples, len(signal))
-            window_signal = signal[start_idx:end_idx]
-            window_time = (start_idx + end_idx) / (2 * self.fs)
-            
-            # Find R peaks in this window
-            window_r_peaks = [r for r in r_peaks if start_idx <= r < end_idx]
-            
-            if len(window_r_peaks) < 2:
-                # Insufficient data - assign low probabilities
-                for arr_type in arrhythmia_types:
-                    heat_map_data[arr_type].append((window_time, 0.0))
-                continue
-            
-            window_rr = np.diff(window_r_peaks) / self.fs * 1000
-            
-            # Calculate probabilities for each arrhythmia type
-            prob_nsr = self._prob_normal_sinus_rhythm(window_rr)
-            prob_afib = self._prob_atrial_fibrillation(window_signal, window_r_peaks)
-            prob_vt = self._prob_ventricular_tachycardia(window_rr)
-            prob_pvc = self._prob_premature_ventricular_contractions(window_signal, window_r_peaks)
-            prob_brady = self._prob_bradycardia(window_rr)
-            prob_tachy = self._prob_tachycardia(window_rr)
-            
-            # Normalize probabilities so they sum to 1.0
-            probs = [prob_nsr, prob_afib, prob_vt, prob_pvc, prob_brady, prob_tachy]
-            total = sum(probs)
-            if total > 0:
-                probs = [p / total for p in probs]
-            else:
-                probs = [1.0/len(probs)] * len(probs)  # Equal probability if all zero
-            
-            # Store probabilities
-            heat_map_data["Normal Sinus Rhythm"].append((window_time, probs[0]))
-            heat_map_data["Atrial Fibrillation"].append((window_time, probs[1]))
-            heat_map_data["Ventricular Tachycardia"].append((window_time, probs[2]))
-            heat_map_data["Premature Ventricular Contractions"].append((window_time, probs[3]))
-            heat_map_data["Sinus Bradycardia"].append((window_time, probs[4]))
-            heat_map_data["Sinus Tachycardia"].append((window_time, probs[5]))
-            heat_map_data["Irregular Rhythm"].append((window_time, 1.0 - prob_nsr))
-        
-        return heat_map_data
-    
-    def _prob_normal_sinus_rhythm(self, rr_intervals):
-        """Calculate probability of normal sinus rhythm"""
-        if len(rr_intervals) < 3:
-            return 0.0
-        mean_hr = 60000 / np.mean(rr_intervals)
-        std_rr = np.std(rr_intervals)
-        if 60 <= mean_hr <= 100 and std_rr < 120:
-            return 0.9
-        elif 50 <= mean_hr <= 110 and std_rr < 150:
-            return 0.5
-        return 0.1
-    
-    def _prob_atrial_fibrillation(self, signal, r_peaks):
-        """Calculate probability of atrial fibrillation"""
-        if len(r_peaks) < 10:
-            return 0.0
-        rr_intervals = np.diff(r_peaks)
-        cv = np.std(rr_intervals) / np.mean(rr_intervals) if np.mean(rr_intervals) > 0 else 0
-        if cv > 0.15:
-            return min(0.95, 0.5 + (cv - 0.15) * 2.0)
-        return max(0.0, 0.5 - cv * 2.0)
-    
-    def _prob_ventricular_tachycardia(self, rr_intervals):
-        """Calculate probability of ventricular tachycardia"""
-        if len(rr_intervals) < 3:
-            return 0.0
-        mean_hr = 60000 / np.mean(rr_intervals)
-        std_rr = np.std(rr_intervals)
-        if mean_hr > 120 and std_rr < 40:
-            return min(0.95, 0.7 + (mean_hr - 120) / 200)
-        return 0.1
-    
-    def _prob_premature_ventricular_contractions(self, signal, r_peaks):
-        """Calculate probability of PVCs"""
-        if len(r_peaks) < 5:
-            return 0.0
-        rr_intervals = np.diff(r_peaks) / self.fs
-        mean_rr = np.mean(rr_intervals)
-        pvc_count = 0
-        for i in range(len(rr_intervals)):
-            if rr_intervals[i] < 0.8 * mean_rr:
-                if i + 1 < len(rr_intervals) and rr_intervals[i+1] > 1.2 * mean_rr:
-                    pvc_count += 1
-        return min(0.95, pvc_count / len(rr_intervals) * 2.0)
-    
-    def _prob_bradycardia(self, rr_intervals):
-        """Calculate probability of bradycardia"""
-        if len(rr_intervals) < 3:
-            return 0.0
-        mean_hr = 60000 / np.mean(rr_intervals)
-        if mean_hr < 60:
-            return min(0.95, 0.5 + (60 - mean_hr) / 60)
-        return 0.1
-    
-    def _prob_tachycardia(self, rr_intervals):
-        """Calculate probability of tachycardia"""
-        if len(rr_intervals) < 3:
-            return 0.0
-        mean_hr = 60000 / np.mean(rr_intervals)
-        if mean_hr > 100:
-            return min(0.95, 0.5 + (mean_hr - 100) / 200)
-        return 0.1
-    
-    def _is_normal_sinus_rhythm(self, rr_intervals):
-        """Check if rhythm is normal sinus rhythm"""
-        if len(rr_intervals) < 3: return False
-        mean_hr = 60000 / np.mean(rr_intervals)
-        std_rr = np.std(rr_intervals)
-        return 60 <= mean_hr <= 100 and std_rr < 120 # Variation less than 120ms
-    
-    def _is_atrial_fibrillation(self, signal, r_peaks):
-        """Detect atrial fibrillation"""
-        if len(r_peaks) < 10: return False
-        rr_intervals = np.diff(r_peaks)
-        # AF is characterized by highly irregular RR intervals and no clear P waves
-        cv = np.std(rr_intervals) / np.mean(rr_intervals) if np.mean(rr_intervals) > 0 else 0
-        return cv > 0.15
-    
-    def _is_ventricular_tachycardia(self, rr_intervals):
-        """Detect ventricular tachycardia"""
-        if len(rr_intervals) < 3: return False
-        mean_hr = 60000 / np.mean(rr_intervals)
-        # VT is a run of 3 or more consecutive PVCs, typically wide QRS and fast rate
-        return mean_hr > 120 and np.std(rr_intervals) < 40 # Fast and regular
-    
-    def _is_bradycardia(self, rr_intervals):
-        """Detect bradycardia"""
-        if len(rr_intervals) < 3: return False
-        mean_hr = 60000 / np.mean(rr_intervals)
-        return mean_hr < 60
-    
-    def _is_tachycardia(self, rr_intervals):
-        """Detect tachycardia"""
-        if len(rr_intervals) < 3: return False
-        mean_hr = 60000 / np.mean(rr_intervals)
-        return mean_hr > 100
-    
-    def _is_premature_ventricular_contractions(self, signal, r_peaks):
-        """Detect PVCs"""
-        if len(r_peaks) < 5: return False
-        rr_intervals = np.diff(r_peaks) / self.fs
-        mean_rr = np.mean(rr_intervals)
-        for i in range(len(rr_intervals)):
-            if rr_intervals[i] < 0.8 * mean_rr: # A beat is premature
-                # Check for compensatory pause
-                if i + 1 < len(rr_intervals) and rr_intervals[i+1] > 1.2 * mean_rr:
-                    return True
-        return False
-
 class ExpandedLeadView(QDialog):
     """Expanded view for individual ECG leads with detailed analysis"""
     
@@ -537,6 +381,14 @@ class ExpandedLeadView(QDialog):
         self.view_window_offset = 0.0
         self.manual_view = False
         self.history_slider_active = False
+
+	    # Demo mode settings - sync with parent's demo manager
+        self.demo_mode_active = False
+        self.demo_manager = None
+        if parent and hasattr(parent, 'demo_manager') and hasattr(parent, 'demo_toggle'):
+            self.demo_mode_active = parent.demo_toggle.isChecked()
+            self.demo_manager = parent.demo_manager
+            print(f"🎬 Expanded view: Demo mode is {'ON' if self.demo_mode_active else 'OFF'}")
         
         # Live data update
         self.timer = QTimer()
@@ -987,7 +839,38 @@ class ExpandedLeadView(QDialog):
                         fontsize=16, color='gray')
             return
         
-        time = np.arange(len(self.ecg_data)) / self.sampling_rate
+        # Calculate time axis based on demo mode or normal mode
+        if self.demo_mode_active and self.demo_manager:
+            # Demo mode: use time window from demo manager
+            try:
+                time_window = self.demo_manager.time_window
+                num_samples = len(self.ecg_data)
+                time = np.linspace(0, time_window, num_samples)
+            except Exception as e:
+                print(f"⚠️ Error getting demo time window in setup: {e}")
+                time = np.arange(len(self.ecg_data)) / self.sampling_rate
+        else:
+            # Normal mode: calculate time window based on wave speed (same as 12-lead view)
+            try:
+                parent = self.parent()
+                if parent and hasattr(parent, 'settings_manager'):
+                    wave_speed = float(parent.settings_manager.get_wave_speed())
+                    # Calculate time window based on wave speed (same logic as 12-lead view)
+                    baseline_seconds = 10.0
+                    seconds_scale = (25.0 / max(1e-6, wave_speed))
+                    time_window = baseline_seconds * seconds_scale
+                    
+                    # Create time axis that matches the time window
+                    num_samples = len(self.ecg_data)
+                    time = np.linspace(0, time_window, num_samples)
+                else:
+                    # Fallback: use sampling rate if settings not available
+                    time = np.arange(len(self.ecg_data)) / self.sampling_rate
+            except Exception as e:
+                print(f"⚠️ Error calculating time window in setup: {e}")
+                # Fallback: use sampling rate
+                time = np.arange(len(self.ecg_data)) / self.sampling_rate
+        
         # Plot at 1.0x to establish baseline
         scaled = self.ecg_data * self.display_gain * 1.0  # Use 1.0x for baseline
         
@@ -998,7 +881,23 @@ class ExpandedLeadView(QDialog):
         
         # self.ax.set_xlabel('Time (seconds)', fontsize=14, fontweight='bold', color='#34495e')
         self.ax.set_ylabel('Amplitude (mV)', fontsize=14, fontweight='bold', color='#34495e')
-        self.ax.set_title(f'Lead {self.lead_name} - PQRST Analysis', fontsize=18, fontweight='bold', color='#2c3e50')
+        
+        # Add demo mode or wave speed info to title
+        if self.demo_mode_active and self.demo_manager:
+            mode_text = f" [{self.demo_manager.current_wave_speed}mm/s]"
+        else:
+            # Show wave speed for normal mode too
+            try:
+                parent = self.parent()
+                if parent and hasattr(parent, 'settings_manager'):
+                    wave_speed = float(parent.settings_manager.get_wave_speed())
+                    mode_text = f" [{wave_speed:.1f}mm/s]"
+                else:
+                    mode_text = ""
+            except Exception:
+                mode_text = ""
+        self.ax.set_title(f'Lead {self.lead_name} - PQRST Analysis{mode_text}', 
+                         fontsize=18, fontweight='bold', color='#2c3e50')
         
         self.ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='#bdc3c7')
         self.ax.spines['top'].set_visible(False)
@@ -1417,7 +1316,7 @@ class ExpandedLeadView(QDialog):
         arrhythmia_layout.setContentsMargins(15, 10, 15, 10)
         arrhythmia_layout.setSpacing(15)
         
-        title = QLabel("Rhythm Interpretation:")
+        title = QLabel("Arrhythmia Interpretation:")
         title.setFont(QFont("Segoe UI", 13, QFont.Bold))
         title.setStyleSheet("color: #2c3e50; border: none; background: transparent;")
         arrhythmia_layout.addWidget(title)
@@ -1441,7 +1340,30 @@ class ExpandedLeadView(QDialog):
             analysis = self.analyzer.analyze_signal(self.ecg_data)
             self.calculate_metrics(analysis)
             
-            arrhythmias = self.arrhythmia_detector.detect_arrhythmias(self.ecg_data, analysis['r_peaks'])
+            # Check if serial data has actually started flowing (not just initial state)
+            has_received_serial_data = False
+            min_serial_data_packets = 50
+            
+            # Check parent for serial reader state
+            if self._parent and hasattr(self._parent, 'serial_reader'):
+                serial_reader = self._parent.serial_reader
+                if serial_reader and hasattr(serial_reader, 'running') and serial_reader.running:
+                    # Check if we've received substantial serial data
+                    if hasattr(serial_reader, 'data_count'):
+                        data_count = serial_reader.data_count
+                        # Only check for asystole if we've received at least 50 packets
+                        if data_count >= min_serial_data_packets:
+                            has_received_serial_data = True
+                            print(f"✅ Serial data flowing: {data_count} packets received - asystole detection enabled")
+                        else:
+                            print(f"⏳ Waiting for serial data: {data_count}/{min_serial_data_packets} packets - asystole detection disabled")
+            
+            arrhythmias = self.arrhythmia_detector.detect_arrhythmias(
+                self.ecg_data, 
+                analysis,
+                has_received_serial_data=has_received_serial_data,
+                min_serial_data_packets=min_serial_data_packets
+            )
             self.update_arrhythmia_display(arrhythmias)
             
             # Generate heat map data
@@ -1455,10 +1377,43 @@ class ExpandedLeadView(QDialog):
             # Update history slider range after analysis
             self.update_history_slider()
         except Exception as e:
-            print(f"Error in ECG analysis: {e}")
-            self.arrhythmia_list.setText("An error occurred during analysis.")
             import traceback
-            traceback.print_exc()
+            error_msg = f"Error in ECG analysis: {str(e)}"
+            print(error_msg)
+            print(traceback.format_exc())
+            # Still try to show rate-based detection even if other detections fail
+            try:
+                if len(self.ecg_data) > 0:
+                    # Try to get r_peaks from analyzer if analysis failed
+                    try:
+                        temp_analysis = self.analyzer.analyze_signal(self.ecg_data)
+                        r_peaks = temp_analysis.get('r_peaks', [])
+                    except:
+                        r_peaks = []
+                    
+                    if len(r_peaks) >= 3:
+                        rr_intervals = np.diff(r_peaks) / self.sampling_rate * 1000
+                        if len(rr_intervals) >= 2:
+                            mean_rr = np.mean(rr_intervals)
+                            if mean_rr > 0:
+                                heart_rate = 60000 / mean_rr
+                                if heart_rate >= 100:
+                                    self.arrhythmia_list.setText("Sinus Tachycardia")
+                                elif heart_rate < 60:
+                                    self.arrhythmia_list.setText("Sinus Bradycardia")
+                                else:
+                                    self.arrhythmia_list.setText(f"Analysis error: {str(e)[:50]}")
+                            else:
+                                self.arrhythmia_list.setText(f"Analysis error: {str(e)[:50]}")
+                        else:
+                            self.arrhythmia_list.setText(f"Analysis error: {str(e)[:50]}")
+                    else:
+                        self.arrhythmia_list.setText(f"Analysis error: {str(e)[:50]}")
+                else:
+                    self.arrhythmia_list.setText(f"Analysis error: {str(e)[:50]}")
+            except Exception as e2:
+                print(f"Error in fallback detection: {e2}")
+                self.arrhythmia_list.setText(f"Analysis error: {str(e)[:50]}")
     
     def calculate_metrics(self, analysis):
         """Calculate ECG metrics from analysis results"""
@@ -1582,6 +1537,13 @@ class ExpandedLeadView(QDialog):
         arrhythmia_text = ", ".join(arrhythmias) if arrhythmias else "No specific arrhythmia detected."
         self.arrhythmia_list.setText(arrhythmia_text)
         
+        # Keep parent ECG page's rhythm interpretation in sync for dashboard conclusions
+        if hasattr(self, '_parent') and self._parent is not None:
+            try:
+                setattr(self._parent, '_latest_rhythm_interpretation', arrhythmia_text)
+            except Exception:
+                pass
+        
         # Color code based on severity
         is_normal = "Normal Sinus Rhythm" in arrhythmia_text
         self.arrhythmia_list.setStyleSheet(f"""
@@ -1633,10 +1595,12 @@ class ExpandedLeadView(QDialog):
             self.heatmap_time_axis = None
             return
 
+        # Pick any available series to establish window count/time axis
         base_series = None
         for arr_type in arrhythmia_types:
-            if arr_type in heat_map_data and heat_map_data[arr_type]:
-                base_series = heat_map_data[arr_type]
+            series = heat_map_data.get(arr_type)
+            if series:
+                base_series = series
                 break
 
         if not base_series:
@@ -1673,7 +1637,6 @@ class ExpandedLeadView(QDialog):
             # Record an arrhythmia event when a non-normal rhythm dominates this window
             if best_type != "Normal Sinus Rhythm" and best_prob >= 0.7:
                 self.arrhythmia_events.append((float(time_value), best_type))
-
         self.heatmap_overlay = overlay
         self.heatmap_time_axis = np.array(time_axis)
         if len(self.heatmap_time_axis) > 1:
