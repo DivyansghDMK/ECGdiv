@@ -39,7 +39,10 @@ This document details the exact clinical calculation logic used in the applicati
 
 ### QT Interval (ms)
 - **Method**: QRS onset to T-wave offset on the median beat.
-- **Boundary Discipline**: T-offset is detected where the signal either crosses the TP baseline or the energy drops to the noise floor (0.5 * threshold).
+- **Boundary Discipline**: T-offset detection stops when:
+  1. The signal crosses the TP baseline (isoelectric line).
+  2. The energy drops below the noise floor (0.5 * threshold).
+- **Units**: Internal calculations in seconds; reported in milliseconds.
 - **Formula**: `QT = T_offset_ms - QRS_onset_ms`
 
 ### QTc (Bazett's Formula)
@@ -65,7 +68,11 @@ Instead of simple peak amplitudes, the axis is calculated using the **Net Area (
 4.  **Normalization**: `Axis_Deg = (Axis_Rad * 180 / π)` normalized to 0–360°.
 
 ### Fixed Wave Windows (Relative to R-peak)
-- **P-Axis**: `[-200 ms, -140 ms]` (Strict window to avoid QRS energy).
+- **P-Axis**: Dynamic window based on early P-wave energy (Marquette rule).
+  - **TP Baseline (P-only)**: Must use **PRE-P** isoelectric segment (`[-300 ms, -200 ms]` before R).
+  - **Logic**: Detect `P-onset` and `P-offset` on Lead II. Integrate only the **FIRST 60%** of the P-wave (`[P-onset + 5%, P-onset + 60% of duration]`) to avoid **Atrial Repolarization (Ta wave)** and nodal drift contamination.
+  - **Energy Gate**: If `|Net_I| + |Net_aVF| < 4e-5 mV·s`, report as "Indeterminate" (suppress update).
+  - **❌ No Clamping**: Removed artificial `0-90°` clamping.
 - **QRS-Axis**: `[-50 ms, +80 ms]`
 - **T-Axis**: `[+120 ms, +500 ms]`
 

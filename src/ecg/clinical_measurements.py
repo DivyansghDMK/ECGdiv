@@ -423,107 +423,160 @@ def measure_st_deviation_from_median_beat(median_beat, time_axis, fs, tp_baselin
     return st_mv
 
 
+def detect_p_wave_bounds(median_beat, r_idx, fs, tp_baseline):
+    """
+    Find actual P-onset and P-offset indices on the median beat (GE/Philips style).
+    
+    Args:
+        median_beat: Median beat waveform (Lead II preferred)
+        r_idx: R-peak index
+        fs: Sampling rate (Hz)
+        tp_baseline: Isoelectric reference
+        
+    Returns:
+        (onset_idx, offset_idx) or (None, None)
+    """
+    try:
+        # P-wave search area: -300ms to -40ms relative to R
+        search_start = max(0, r_idx - int(0.30 * fs))
+        search_end = r_idx - int(0.04 * fs)
+        
+        if search_end <= search_start:
+            return None, None
+            
+        segment = median_beat[search_start:search_end]
+        centered = segment - tp_baseline
+        
+        # Detection threshold: 3% of QRS amplitude or fixed floor
+        qrs_amp = np.ptp(median_beat[r_idx-int(0.05*fs):r_idx+int(0.05*fs)])
+        threshold = max(0.03 * qrs_amp, 0.05)
+        
+        # Find absolute max peak in window
+        peak_idx_rel = np.argmax(np.abs(centered))
+        peak_idx = search_start + peak_idx_rel
+        
+        if np.abs(centered[peak_idx_rel]) < threshold:
+            return None, None
+            
+        # P-onset: first point before peak returning to baseline
+        onset_idx = search_start
+        for i in range(peak_idx, search_start, -1):
+            if np.abs(median_beat[i] - tp_baseline) < threshold * 0.2:
+                onset_idx = i
+                break
+                
+        # P-offset: first point after peak returning to baseline
+        offset_idx = search_end
+        for i in range(peak_idx, search_end):
+            if np.abs(median_beat[i] - tp_baseline) < threshold * 0.2:
+                offset_idx = i
+                break
+                
+        return onset_idx, offset_idx
+    except:
+        return None, None
+
+
 def calculate_axis_from_median_beat(lead_i_raw, lead_ii_raw, lead_avf_raw, median_beat_i, median_beat_ii, median_beat_avf, 
-                                     r_peak_idx, fs, tp_baseline_i=None, tp_baseline_avf=None, time_axis=None, wave_type='QRS', prev_axis=None):
+                                     r_peak_idx, fs, tp_baseline_i=None, tp_baseline_avf=None, time_axis=None, 
+                                     wave_type='QRS', prev_axis=None, pr_ms=None, adc_i=1200.0, adc_avf=1200.0):
     """
     Calculate electrical axis from median beat using net area (integral) method (GE/Philips standard).
     
-    CRITICAL: Must use 10-second median beat with TP baseline correction BEFORE integration.
-    Fixed windows for P, QRS, and T to prevent contamination.
-    
-    Args:
-        lead_i_raw: Raw Lead I signal (for reference)
-        lead_ii_raw: Raw Lead II signal (for reference)
-        lead_avf_raw: Raw Lead aVF signal (for reference)
-        median_beat_i: Median beat for Lead I
-        median_beat_ii: Median beat for Lead II
-        median_beat_avf: Median beat for Lead aVF
-        r_peak_idx: R-peak index in median beat (center)
-        fs: Sampling rate (Hz)
-        tp_baseline_i: TP baseline for Lead I
-        tp_baseline_avf: TP baseline for Lead aVF
-        time_axis: Time axis in ms (centered at R-peak = 0 ms)
-        wave_type: 'P', 'QRS', or 'T' for different wave axes
-        prev_axis: Previous median axis for safety clamp (optional)
-    
-    Returns:
-        Axis in degrees (0° to 360°, GE Marquette standard)
+    CRITICAL: Must use wave-specific baseline and integration windows.
     """
     try:
         if time_axis is None:
             time_axis = np.arange(len(median_beat_i)) / fs * 1000.0 - (r_peak_idx / fs * 1000.0)
             
-        # STEP 1: Determine TP baseline from median beat (end of T -> start of P)
-        # Using [700, 800] ms after R as a reliable TP segment in 1.3s template
-        tp_start_ms, tp_end_ms = 700, 800
-        tp_start_idx = np.argmin(np.abs(time_axis - tp_start_ms))
-        tp_end_idx = np.argmin(np.abs(time_axis - tp_end_ms))
-        
-        if tp_end_idx > tp_start_idx and tp_end_idx < len(median_beat_i):
-            tp_baseline_i = np.mean(median_beat_i[tp_start_idx:tp_end_idx])
-            tp_baseline_avf = np.mean(median_beat_avf[tp_start_idx:tp_end_idx])
-        elif tp_baseline_i is None or tp_baseline_avf is None:
-            # Fallback to start of beat if TP segment is not reachable
-            tp_baseline_i = np.mean(median_beat_i[:int(0.05 * fs)])
-            tp_baseline_avf = np.mean(median_beat_avf[:int(0.05 * fs)])
+        # STEP 1: Determine Wave-Specific TP Baseline
+        if wave_type == 'P':
+            # GE / Philips Rule: P-axis baseline must be PRE-P [-300ms, -200ms] before R
+            tp_start = r_peak_idx - int(0.30 * fs)
+            tp_end   = r_peak_idx - int(0.20 * fs)
             
-        # STEP 2: Apply TP baseline correction BEFORE integration
+            tp_start = max(0, tp_start)
+            tp_end = max(1, tp_end)
+            
+            tp_baseline_i   = np.mean(median_beat_i[tp_start:tp_end])
+            tp_baseline_avf = np.mean(median_beat_avf[tp_start:tp_end])
+            tp_baseline_ii  = np.mean(median_beat_ii[tp_start:tp_end]) # For P detection
+        else:
+            # QRS and T use standard post-T TP baseline [700, 800] ms after R
+            tp_start_ms, tp_end_ms = 700, 800
+            tp_start_idx = np.argmin(np.abs(time_axis - tp_start_ms))
+            tp_end_idx = np.argmin(np.abs(time_axis - tp_end_ms))
+            
+            if tp_end_idx > tp_start_idx and tp_end_idx < len(median_beat_i):
+                tp_baseline_i = np.mean(median_beat_i[tp_start_idx:tp_end_idx])
+                tp_baseline_avf = np.mean(median_beat_avf[tp_start_idx:tp_end_idx])
+            elif tp_baseline_i is None or tp_baseline_avf is None:
+                tp_baseline_i = np.mean(median_beat_i[:int(0.05 * fs)])
+                tp_baseline_avf = np.mean(median_beat_avf[:int(0.05 * fs)])
+            
+        # STEP 2: Apply baseline correction BEFORE integration
         signal_i = median_beat_i - tp_baseline_i
         signal_avf = median_beat_avf - tp_baseline_avf
         
-        # STEP 3: Define HARD-FIXED wave windows
+        # STEP 3: Define Integration Windows
         if wave_type == 'P':
-            # GE / Philips HARD P-WAVE WINDOW
-            # NEVER allow window closer than 140 ms to R
-            wave_start = r_peak_idx - int(0.20 * fs)   # -200 ms
-            wave_end   = r_peak_idx - int(0.14 * fs)   # -140 ms
-
-            # Absolute safety guard
-            wave_end = min(wave_end, r_peak_idx - int(0.14 * fs))
+            # Detect actual P wave bounds on Lead II (Marquette style)
+            p_onset, p_offset = detect_p_wave_bounds(median_beat_ii, r_peak_idx, fs, tp_baseline_ii)
+            
+            if p_onset is None or p_offset is None:
+                # Fallback to conservative estimate if detection fails
+                p_onset = r_peak_idx - int(0.20 * fs)
+                p_offset = r_peak_idx - int(0.12 * fs)
+            
+            p_len = p_offset - p_onset
+            # GE / Philips Rule: Integrate only FIRST 60% of P-wave to avoid Ta wave
+            wave_start = p_onset + int(0.05 * p_len)
+            wave_end   = p_onset + int(0.60 * p_len)
+            
+            # Hard clinical constraint: never closer than 120ms to R
+            wave_end = min(wave_end, r_peak_idx - int(0.12 * fs))
                 
         elif wave_type == 'QRS':
-            # QRS window: [-50, 80] ms around R
             wave_start = r_peak_idx - int(0.05 * fs)
             wave_end = r_peak_idx + int(0.08 * fs)
         elif wave_type == 'T':
-            # T-wave window: [120, 500] ms after R
             wave_start = r_peak_idx + int(0.12 * fs)
             wave_end = r_peak_idx + int(0.50 * fs)
         else:
             return 0
             
-        # Ensure indices are within bounds
         wave_start = max(0, int(wave_start))
         wave_end = min(len(median_beat_i), int(wave_end))
         
         if wave_end <= wave_start:
-            return 0
+            return None
             
         # STEP 4: Area Integration (Net Area)
         wave_segment_i = signal_i[wave_start:wave_end]
         wave_segment_avf = signal_avf[wave_start:wave_end]
         
         dt = 1.0 / fs
-        net_i = np.trapz(wave_segment_i, dx=dt)
-        net_avf = np.trapz(wave_segment_avf, dx=dt)
+        net_i_adc = np.trapz(wave_segment_i, dx=dt)
+        net_avf_adc = np.trapz(wave_segment_avf, dx=dt)
         
-        # Safety clamp: if signal area is too small, return previous axis
-        # GE/Philips standard: Higher noise floor for P-wave energy gate (4e-5 mV·s)
+        net_i = net_i_adc / adc_i
+        net_avf = net_avf_adc / adc_avf
+        
+        # STEP 5: Clinical Safety Gate (GE-like Rejection)
+        p_energy = abs(net_i) + abs(net_avf)
         noise_floor = 0.00004 if wave_type == 'P' else 0.00002 
-        if (abs(net_i) + abs(net_avf)) < noise_floor:
-            return prev_axis if prev_axis is not None else 0
+        
+        if p_energy < noise_floor:
+            return prev_axis if prev_axis is not None else None
             
-        # STEP 5: Calculate axis: atan2(net_aVF, net_I)
+        # STEP 6: Calculate axis: atan2(net_aVF, net_I)
         axis_rad = np.arctan2(net_avf, net_i)
         axis_deg = np.degrees(axis_rad)
         
-        # Normalize to 0° to 360°
         if axis_deg < 0:
             axis_deg += 360
             
         return axis_deg
     except Exception as e:
         print(f"❌ Error calculating {wave_type} axis: {e}")
-        return 0
-
-
+        return None
