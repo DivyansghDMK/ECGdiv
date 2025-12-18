@@ -68,11 +68,11 @@ Instead of simple peak amplitudes, the axis is calculated using the **Net Area (
 4.  **Normalization**: `Axis_Deg = (Axis_Rad * 180 / π)` normalized to 0–360°.
 
 ### Fixed Wave Windows (Relative to R-peak)
-- **P-Axis**: Dynamic window based on early P-wave energy.
-  - **Logic**: Integrate only the **FIRST 60%** of the P-wave (`[P-onset + 5%, P-onset + 60%]`) to avoid **Atrial Repolarization (Ta wave)** contamination.
+- **P-Axis**: Dynamic window based on early P-wave energy (Marquette rule).
   - **TP Baseline (P-only)**: Must use **PRE-P** isoelectric segment (`[-300 ms, -200 ms]` before R).
+  - **Logic**: Detect `P-onset` and `P-offset` on Lead II. Integrate only the **FIRST 60%** of the P-wave (`[P-onset + 5%, P-onset + 60% of duration]`) to avoid **Atrial Repolarization (Ta wave)** and nodal drift contamination.
   - **Energy Gate**: If `|Net_I| + |Net_aVF| < 4e-5 mV·s`, report as "Indeterminate" (suppress update).
-  - **❌ No Clamping**: Removed artificial `0-90°` clamping to reveal true vector health.
+  - **❌ No Clamping**: Removed artificial `0-90°` clamping.
 - **QRS-Axis**: `[-50 ms, +80 ms]`
 - **T-Axis**: `[+120 ms, +500 ms]`
 
