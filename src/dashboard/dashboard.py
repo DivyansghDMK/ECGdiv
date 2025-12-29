@@ -911,7 +911,6 @@ class Dashboard(QWidget):
             ("QRS Axis", "0°", "", "qrs_axis"),
             ("ST", "0.00", "mV", "st_interval"),
             ("QT/QTc", "0", "ms", "qtc_interval"),
-            ("Time", "00:00", "", "time_elapsed"),  # Restore time for synchronization
         ]
         
         for title, value, unit, key in metric_info:
@@ -960,14 +959,7 @@ class Dashboard(QWidget):
         self.metrics_timer.timeout.connect(self.update_dashboard_metrics_from_ecg)
         self.metrics_timer.start(1000)  # Update every second
         
-        # --- Live Session Timer ---
-        self.session_start_time = None  # Will be set when demo/acquisition starts
-        self.session_total_paused_time = 0  # Track total paused duration
-        self.session_paused_at = None  # When current pause started
-        self.session_last_elapsed = 0  # Frozen elapsed time during pause
-        self.session_timer = QTimer(self)
-        self.session_timer.timeout.connect(self.update_session_time)
-        self.session_timer.start(1000)  # Update every second
+        # Session timer removed - no longer needed
         # Add dashboard_page to stack
         self.page_stack.addWidget(self.dashboard_page)
         # --- ECG Test Page ---
@@ -1697,25 +1689,34 @@ class Dashboard(QWidget):
                     
                     # Ensure reasonable range (10-300 BPM)
                     heart_rate = max(10, min(300, heart_rate))
-                    hr_int = int(round(heart_rate))
                     
-                    # ANTI-FLICKERING: Smooth over last 5 readings for stability
-                    # Increased from 3 to 5 for better stability (matches ECG test page)
+                    # ANTI-FLICKERING: Smooth over last 10 readings for maximum stability
                     if not hasattr(self, '_dashboard_bpm_buffer'):
                         self._dashboard_bpm_buffer = []
                     
-                    self._dashboard_bpm_buffer.append(hr_int)
-                    if len(self._dashboard_bpm_buffer) > 5:
+                    # Store as float to preserve precision (same as ECG test page)
+                    self._dashboard_bpm_buffer.append(float(heart_rate))
+                    if len(self._dashboard_bpm_buffer) > 10:
                         self._dashboard_bpm_buffer.pop(0)
                     
-                    # Use median for stability (ignores outliers)
-                    smoothed_bpm = int(np.median(self._dashboard_bpm_buffer))
+                    # Use mode (most frequent value) for maximum stability - best for steady BPM display
+                    # Round to integers first for mode calculation
+                    rounded_buffer = [int(round(x)) for x in self._dashboard_bpm_buffer]
+                    # Calculate mode (most frequent value)
+                    from collections import Counter
+                    if len(rounded_buffer) >= 3:  # Need at least 3 readings for mode
+                        mode_result = Counter(rounded_buffer).most_common(1)
+                        smoothed_bpm = mode_result[0][0] if mode_result else int(round(np.median(self._dashboard_bpm_buffer)))
+                    else:
+                        # Fallback to median if not enough data
+                        smoothed_bpm_float = np.median(self._dashboard_bpm_buffer)
+                        smoothed_bpm = int(round(smoothed_bpm_float))
                     
-                    # HYSTERESIS: Only update if change is ≥2 BPM to prevent flickering
+                    # HYSTERESIS: Only update if change is ≥3 BPM for maximum stability
                     if not hasattr(self, '_last_stable_dashboard_bpm'):
                         self._last_stable_dashboard_bpm = smoothed_bpm
                     
-                    if abs(smoothed_bpm - self._last_stable_dashboard_bpm) >= 2:
+                    if abs(smoothed_bpm - self._last_stable_dashboard_bpm) >= 3:
                         self._last_stable_dashboard_bpm = smoothed_bpm
                     
                     metrics['heart_rate'] = self._last_stable_dashboard_bpm
@@ -1863,12 +1864,6 @@ class Dashboard(QWidget):
             
             # metrics['sampling_rate'] = f"{sampling_rate} Hz"  # Commented out
             
-            # Calculate Time Elapsed (synchronized with ECG test page)
-            if len(ecg_signal) > 0:
-                time_elapsed_sec = len(ecg_signal) / fs  # Use fs (actual sampling rate) not sampling_rate parameter
-                minutes = int(time_elapsed_sec // 60)
-                seconds = int(time_elapsed_sec % 60)
-                metrics['time_elapsed'] = f"{minutes:02d}:{seconds:02d}"
             
             return metrics
             
@@ -2345,8 +2340,6 @@ class Dashboard(QWidget):
                                 'qtc_interval': self.metric_labels['qtc_interval'].text() if 'qtc_interval' in self.metric_labels else None,
                             }
                             # Update time elapsed for synchronization
-                            if 'time_elapsed' in ecg_metrics and 'time_elapsed' in self.metric_labels:
-                                self.metric_labels['time_elapsed'].setText(ecg_metrics['time_elapsed'])
 
                             # Snapshot last 5s per lead
                             from utils.session_recorder import SessionRecorder
@@ -3283,84 +3276,6 @@ class Dashboard(QWidget):
         
         except Exception as e:
             print(f"⚠️ Error updating conclusion: {e}")
-    
-    def update_session_time(self):
-        """Update live session timer on both dashboard and ECG test page"""
-        try:
-            current_time = time.time()
-            
-            if self.is_ecg_active():
-                # ECG IS active - timer is RUNNING
-                if self.session_start_time is None:
-                    # Starting fresh
-                    self.session_start_time = current_time
-                    self.session_total_paused_time = 0  # Track total paused duration
-                    self.session_paused_at = None  # When current pause started
-                    self.session_last_elapsed = 0  # Frozen elapsed time during pause
-                    print("⏱️ Session timer started")
-                
-                # Check if we're resuming from a pause
-                if self.session_paused_at is not None:
-                    # We were paused and now resuming - add the paused duration to total
-                    paused_duration = current_time - self.session_paused_at
-                    self.session_total_paused_time += paused_duration
-                    self.session_paused_at = None
-                    print(f"⏯️ Resumed - total paused: {int(self.session_total_paused_time)}s")
-                
-                # Calculate elapsed time accounting for pauses
-                elapsed = int(current_time - self.session_start_time - self.session_total_paused_time)
-                mm = elapsed // 60
-                ss = elapsed % 60
-                time_str = f"{mm:02d}:{ss:02d}"
-            else:
-                # ECG is NOT active - timer is PAUSED
-                if self.session_start_time is not None:
-                    # Check if we're entering pause state for the first time (session_paused_at is None)
-                    if self.session_paused_at is None:
-                        # Just started pausing - record when pause started and capture elapsed time
-                        self.session_paused_at = current_time
-                        # Capture the elapsed time at the moment of pause
-                        elapsed = int(current_time - self.session_start_time - self.session_total_paused_time)
-                        self.session_last_elapsed = elapsed  # Store frozen elapsed time
-                        print(f"⏸️ Timer paused at {elapsed}s")
-                    
-                    # Show FROZEN elapsed time (don't recalculate)
-                    mm = self.session_last_elapsed // 60
-                    ss = self.session_last_elapsed % 60
-                    time_str = f"{mm:02d}:{ss:02d}"
-                else:
-                    # No session started yet - show 00:00
-                    time_str = "00:00"
-            
-            # Update time on both dashboard and ECG test page for synchronization
-            if 'time_elapsed' in self.metric_labels:
-                self.metric_labels['time_elapsed'].setText(time_str)
-            
-            if hasattr(self, 'ecg_test_page') and hasattr(self.ecg_test_page, 'metric_labels'):
-                if 'time_elapsed' in self.ecg_test_page.metric_labels:
-                    self.ecg_test_page.metric_labels['time_elapsed'].setText(time_str)
-        except Exception as e:
-            print(f"⚠️ Error updating session time: {e}")
-    
-    def start_acquisition_timer(self):
-        """Start the session timer when demo or hardware acquisition begins"""
-        if self.session_start_time is None:
-            # Starting fresh - never been started before
-            self.session_start_time = time.time()
-            self.session_total_paused_time = 0  # Reset paused time tracking
-            self.session_paused_at = None
-            print("⏱️ Session timer started (first time)")
-        else:
-            # Resuming from pause - adjust start time to account for paused duration
-            if self.session_paused_at is not None:
-                # Add the paused duration to total paused time
-                paused_duration = time.time() - self.session_paused_at
-                self.session_total_paused_time += paused_duration
-                self.session_paused_at = None
-                print(f"⏱️ Session timer resumed (was paused for {int(paused_duration)}s)")
-            else:
-                print(f"⏱️ Session timer already running")
-    
     def handle_sign_out(self):
         # User label removed per request
         # self.user_label.setText("Not signed in")
@@ -3370,11 +3285,6 @@ class Dashboard(QWidget):
             if recorder:
                 recorder.close()
                 self._session_recorder = None
-        except Exception:
-            pass
-        try:
-            if hasattr(self, 'session_timer'):
-                self.session_timer.stop()
         except Exception:
             pass
         self.close()

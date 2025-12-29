@@ -2250,5 +2250,37 @@
     "patient_name": "HARSH THAKURR",
     "date_time": "2025-12-26 12:19:12",
     "id": 12
+  },
+  {
+    "date": "2025-12-27",
+    "time": "16:02:02",
+    "report_type": "12 Lead",
+    "report_file": "C:\\Users\\DELL\\Documents\\26\\ECG_Report_20251227_160200.pdf",
+    "first_name": "HARSH",
+    "last_name": "THAKURR",
+    "age": "25",
+    "gender": "Other",
+    "doctor": "ptrrrrrrrrrrrr",
+    "doctor_mobile": "5684768946",
+    "Org.": "pratyakshhhhhhhhhhh",
+    "patient_name": "HARSH THAKURR",
+    "date_time": "2025-12-27 16:02:02",
+    "id": 12
+  },
+  {
+    "date": "2025-12-27",
+    "time": "16:02:19",
+    "report_type": "12 Lead",
+    "report_file": "C:\\Users\\DELL\\Documents\\26\\ECG_Report_20251227_160216.pdf",
+    "first_name": "HARSH",
+    "last_name": "THAKURR",
+    "age": "25",
+    "gender": "Other",
+    "doctor": "ptrrrrrrrrrrrr",
+    "doctor_mobile": "5684768946",
+    "Org.": "pratyakshhhhhhhhhhh",
+    "patient_name": "HARSH THAKURR",
+    "date_time": "2025-12-27 16:02:18",
+    "id": 12
   }
 ]

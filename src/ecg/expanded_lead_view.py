@@ -373,8 +373,8 @@ class ExpandedLeadView(QDialog):
         # Display gain (no pre-scaling; gain applied once at display stage)
         self.display_gain = 1.0
 
-        self.amplification = 1.0  # Amplification factor
-        self.min_amplification = 0.1  # Minimum 10% of original
+        self.amplification = 0.05  # Amplification factor (default 0.05x for smaller waves)
+        self.min_amplification = 0.05  # Minimum 5% of original
         self.max_amplification = 10.0  # Maximum 10x amplification
 
         # Store original y-axis limits (will be set after first plot)
@@ -1397,12 +1397,14 @@ class ExpandedLeadView(QDialog):
             time = np.arange(len(display_signal), dtype=float) / self.sampling_rate + (start_idx / self.sampling_rate)
 
             # 🏥 Y-axis: percentile target with EMA smoothing (calm, paper-like)
+            # Reduced multiplier for smaller wave display
             if len(display_signal) > 0:
                 p99 = np.percentile(np.abs(display_signal), 99)
             else:
                 p99 = 1.0
             p99 = max(0.2, p99)
-            target_ylim = 1.3 * p99
+            # Reduced from 1.3 to 1.0 for tighter Y-axis (smaller waves)
+            target_ylim = 1.0 * p99
             if not hasattr(self, "_ylim_smooth") or self._ylim_smooth is None:
                 self._ylim_smooth = target_ylim
             else:
@@ -1507,14 +1509,15 @@ class ExpandedLeadView(QDialog):
                 color='#2c3e50'
             )
             
-            self.ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='#bdc3c7')
-            self.ax.spines['top'].set_visible(False)
-            self.ax.spines['right'].set_visible(False)
             # Set x-limits only if we have valid time data
             if len(time) > 0:
                 self.ax.set_xlim(time[0], time[-1])
             else:
                 self.ax.set_xlim(0, 1)  # Fallback
+            
+            self.ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='#bdc3c7')
+            self.ax.spines['top'].set_visible(False)
+            self.ax.spines['right'].set_visible(False)
             
             # Y-limits are already set above with amplification scaling - don't override here
             

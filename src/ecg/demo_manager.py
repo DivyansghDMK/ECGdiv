@@ -192,12 +192,6 @@ class DemoManager:
             except Exception as e:
                 print(f"⚠️ Could not start elapsed timer for demo: {e}")
             
-            # Start the dashboard timer when demo begins (after start_demo_data sets _demo_started_at)
-            try:
-                if hasattr(self.ecg_test_page, 'parent') and hasattr(self.ecg_test_page.parent, 'start_acquisition_timer'):
-                    self.ecg_test_page.parent.start_acquisition_timer()
-            except Exception:
-                pass
             
         else:
             # Demo is being turned OFF - enable hardware controls

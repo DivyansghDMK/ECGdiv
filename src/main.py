@@ -123,7 +123,7 @@ class LoginRegisterDialog(QDialog):
         
         # Set window properties for better responsiveness
         self.setWindowTitle("CardioX by Deckmount - Sign In / Sign Up")
-        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
         
         # Initialize sign-in logic
         from auth.sign_in import SignIn
