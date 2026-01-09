@@ -12,7 +12,7 @@ class SettingsManager:
             "serial_port": "Select Port",
             "baud_rate": "115200",
 
-            # Printer Setup settings
+            # Report Setup settings
             "printer_average_wave": "on",
 
             # Filter settings

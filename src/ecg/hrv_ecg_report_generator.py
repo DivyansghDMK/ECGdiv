@@ -9,6 +9,7 @@ from reportlab.graphics.shapes import Drawing, Line, Rect, Path, String
 from reportlab.lib.units import mm
 from reportlab.pdfbase.pdfmetrics import stringWidth
 import os
+import sys
 import json
 import matplotlib.pyplot as plt  
 import matplotlib
@@ -16,6 +17,26 @@ import numpy as np
 
 # Set matplotlib to use non-interactive backend
 matplotlib.use('Agg')
+
+# ------------------------ Resource path helper for PyInstaller compatibility ------------------------
+
+def _get_resource_path(relative_path):
+    """
+    Get resource path that works both in development and when packaged as exe.
+    For PyInstaller: resources are in sys._MEIPASS
+    For development: resources are relative to project root
+    """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        if hasattr(sys, '_MEIPASS'):
+            base_path = sys._MEIPASS
+        else:
+            # Development mode - get path relative to this file
+            base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        return os.path.join(base_path, relative_path)
+    except Exception:
+        # Fallback to relative path
+        return os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "..", relative_path)
 
 # ==================== ECG DATA SAVE/LOAD FUNCTIONS ====================
 
@@ -3171,9 +3192,9 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         
         # STEP 2: Draw logo on all pages (existing code)
         # Prefer PNG (ReportLab-friendly); fallback to WebP if PNG missing
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        png_path = os.path.join(base_dir, "assets", "Deckmountimg.png")
-        webp_path = os.path.join(base_dir, "assets", "Deckmount.webp")
+        # Use resource_path helper for PyInstaller compatibility
+        png_path = _get_resource_path("assets/Deckmountimg.png")
+        webp_path = _get_resource_path("assets/Deckmount.webp")
         logo_path = png_path if os.path.exists(png_path) else webp_path
 
         if os.path.exists(logo_path):
@@ -3733,9 +3754,9 @@ def generate_hrv_ecg_report(filename="hrv_ecg_report.pdf", lead_ii_data=None, da
             canvas.restoreState()
         
         # STEP 2: Draw logo (REPOSITIONED - lower from top)
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        png_path = os.path.join(base_dir, "assets", "Deckmountimg.png")
-        webp_path = os.path.join(base_dir, "assets", "Deckmount.webp")
+        # Use resource_path helper for PyInstaller compatibility
+        png_path = _get_resource_path("assets/Deckmountimg.png")
+        webp_path = _get_resource_path("assets/Deckmount.webp")
         logo_path = png_path if os.path.exists(png_path) else webp_path
         
         if os.path.exists(logo_path):

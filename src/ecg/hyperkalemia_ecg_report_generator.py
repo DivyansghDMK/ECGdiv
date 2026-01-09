@@ -9,6 +9,7 @@ from reportlab.graphics.shapes import Drawing, Line, Rect, Path, String
 from reportlab.lib.units import mm
 from reportlab.pdfbase.pdfmetrics import stringWidth
 import os
+import sys
 import json
 import matplotlib.pyplot as plt  
 import matplotlib
@@ -16,6 +17,26 @@ import numpy as np
 
 # Set matplotlib to use non-interactive backend
 matplotlib.use('Agg')
+
+# ------------------------ Resource path helper for PyInstaller compatibility ------------------------
+
+def _get_resource_path(relative_path):
+    """
+    Get resource path that works both in development and when packaged as exe.
+    For PyInstaller: resources are in sys._MEIPASS
+    For development: resources are relative to project root
+    """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        if hasattr(sys, '_MEIPASS'):
+            base_path = sys._MEIPASS
+        else:
+            # Development mode - get path relative to this file
+            base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        return os.path.join(base_path, relative_path)
+    except Exception:
+        # Fallback to relative path
+        return os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "..", relative_path)
 
 # ==================== ECG DATA SAVE/LOAD FUNCTIONS ====================
 
@@ -62,7 +83,7 @@ def save_ecg_data_to_file(ecg_test_page, output_file=None):
     # Priority: Use ecg_buffers (5000 samples) if available, otherwise use data (1000 samples)
     
     # Debug: Check what attributes ecg_test_page has
-    print(f"🔍 DEBUG: ecg_test_page attributes check:")
+    print(f" DEBUG: ecg_test_page attributes check:")
     print(f"   has ecg_buffers: {hasattr(ecg_test_page, 'ecg_buffers')}")
     print(f"   has data: {hasattr(ecg_test_page, 'data')}")
     print(f"   has ptrs: {hasattr(ecg_test_page, 'ptrs')}")
@@ -115,7 +136,7 @@ def save_ecg_data_to_file(ecg_test_page, output_file=None):
     if sample_counts:
         max_samples = max(sample_counts)
         min_samples = min(sample_counts)
-        print(f"📊 Buffer analysis: Max samples={max_samples}, Min samples={min_samples}")
+        print(f" Buffer analysis: Max samples={max_samples}, Min samples={min_samples}")
         
         # Calculate expected samples for 13.2s window at current sampling rate
         sampling_rate = saved_data.get("sampling_rate", 80.0)
@@ -402,7 +423,7 @@ def capture_real_ecg_graphs_from_dashboard(dashboard_instance=None, ecg_test_pag
             if hasattr(ecg_test_page, 'demo_manager') and ecg_test_page.demo_manager:
                 time_window_seconds = getattr(ecg_test_page.demo_manager, 'time_window', None)
                 samples_per_second = getattr(ecg_test_page.demo_manager, 'samples_per_second', 150)
-                print(f"🔍 DEMO MODE ON - Wave speed window: {time_window_seconds}s, Sampling rate: {samples_per_second}Hz")
+                print(f" DEMO MODE ON - Wave speed window: {time_window_seconds}s, Sampling rate: {samples_per_second}Hz")
             else:
                 # Fallback: calculate from wave speed setting
                 try:
@@ -412,9 +433,9 @@ def capture_real_ecg_graphs_from_dashboard(dashboard_instance=None, ecg_test_pag
                     # NEW LOGIC: Time window = 165mm / wave_speed (33 boxes × 5mm = 165mm)
                     ecg_graph_width_mm = 33 * 5  # 165mm
                     time_window_seconds = ecg_graph_width_mm / wave_speed
-                    print(f"🔍 DEMO MODE ON - Calculated window using NEW LOGIC: 165mm / {wave_speed}mm/s = {time_window_seconds}s")
+                    print(f" DEMO MODE ON - Calculated window using NEW LOGIC: 165mm / {wave_speed}mm/s = {time_window_seconds}s")
                 except Exception as e:
-                    print(f"⚠️ Could not get demo time window: {e}")
+                    print(f" Could not get demo time window: {e}")
                     time_window_seconds = None
     # Try to get REAL ECG data from the test page
     real_ecg_data = {}
@@ -752,7 +773,7 @@ def get_dashboard_conclusions_from_image(dashboard_instance):
            
             
         ]
-        print("⚠️ Using zero-value fallback (no ECG data available)")
+        print(" Using zero-value fallback (no ECG data available)")
     
     # Ensure we have exactly 12 conclusions (pad with empty strings if needed)
     MAX_CONCLUSIONS = 12
@@ -898,8 +919,8 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     data["wave_speed_mm_s"] = wave_speed_mm_s
     data["wave_gain_mm_mv"] = wave_gain_mm_mv
 
-    print(f"🧮 Pre-plot checks: HR_bpm={hr_bpm_value}, RR_ms={data['RR_ms']}, wave_speed={wave_speed_mm_s}mm/s, wave_gain={wave_gain_mm_mv}mm/mV, sampling_rate={computed_sampling_rate}Hz")
-    print(f"📐 Calculation-based beats formula:")
+    print(f" Pre-plot checks: HR_bpm={hr_bpm_value}, RR_ms={data['RR_ms']}, wave_speed={wave_speed_mm_s}mm/s, wave_gain={wave_gain_mm_mv}mm/mV, sampling_rate={computed_sampling_rate}Hz")
+    print(f" Calculation-based beats formula:")
     print(f"   Graph width: 33 boxes × 5mm = 165mm")
     print(f"   BPM window: (desired_beats × 60) / {hr_bpm_value} = {(6 * 60.0 / hr_bpm_value) if hr_bpm_value > 0 else 0:.2f}s")
     print(f"   Wave speed window: 165mm / {wave_speed_mm_s}mm/s = {165.0 / wave_speed_mm_s:.2f}s")
@@ -1053,7 +1074,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     if ecg_test_page and hasattr(ecg_test_page, 'demo_toggle'):
         is_demo = ecg_test_page.demo_toggle.isChecked()
         if is_demo:
-            print("🔍 DEMO MODE DETECTED - Checking data availability...")
+            print(" DEMO MODE DETECTED - Checking data availability...")
             if hasattr(ecg_test_page, 'data') and len(ecg_test_page.data) > 0:
                 # Check if data has actual variation (not just zeros)
                 sample_data = ecg_test_page.data[0] if len(ecg_test_page.data) > 0 else []
@@ -1580,7 +1601,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                         real_data_available = True
                         time_window_str = f"{calculated_time_window:.2f}s" if calculated_time_window else "auto"
                         actual_time_window = len(real_ecg_data) / computed_sampling_rate if computed_sampling_rate > 0 else 0
-                        print(f"✅ Using SAVED FILE {lead} data: {len(real_ecg_data)} points (requested: {time_window_str}, actual: {actual_time_window:.2f}s, std: {np.std(real_ecg_data):.2f})")
+                        print(f" Using SAVED FILE {lead} data: {len(real_ecg_data)} points (requested: {time_window_str}, actual: {actual_time_window:.2f}s, std: {np.std(real_ecg_data):.2f})")
             
             # Priority 2: Fallback to live dashboard data (if saved data not available OR has insufficient samples)
             # Check if live data has MORE samples than saved data
@@ -1801,14 +1822,14 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                 # Add path to master drawing
                 master_drawing.add(ecg_path)
                 
-                print(f"✅ Drew {len(real_ecg_data)} ECG data points for Lead {lead}")
+                print(f" Drew {len(real_ecg_data)} ECG data points for Lead {lead}")
             else:
-                print(f"📋 No real data for Lead {lead} - showing grid only")
+                print(f" No real data for Lead {lead} - showing grid only")
             
             successful_graphs += 1
             
         except Exception as e:
-            print(f"❌ Error adding Lead {lead}: {e}")
+            print(f" Error adding Lead {lead}: {e}")
             import traceback
             traceback.print_exc()
     
@@ -1928,7 +1949,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
             if hasattr(ecg_test_page, 'demo_manager') and ecg_test_page.demo_manager:
                 time_window_seconds = getattr(ecg_test_page.demo_manager, 'time_window', None)
                 samples_per_second = getattr(ecg_test_page.demo_manager, 'samples_per_second', samples_per_second)
-                print(f"🔍 Report Generator: Demo mode ON - Wave speed window: {time_window_seconds}s, Sampling rate: {samples_per_second}Hz")
+                print(f" Report Generator: Demo mode ON - Wave speed window: {time_window_seconds}s, Sampling rate: {samples_per_second}Hz")
             else:
                 # Fallback: calculate from wave speed setting
                 try:
@@ -1938,12 +1959,12 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                     # NEW LOGIC: Time window = 165mm / wave_speed (33 boxes × 5mm = 165mm)
                     ecg_graph_width_mm = 33 * 5  # 165mm
                     time_window_seconds = ecg_graph_width_mm / wave_speed
-                    print(f"🔍 Report Generator: Demo mode ON - Calculated window using NEW LOGIC: 165mm / {wave_speed}mm/s = {time_window_seconds}s")
+                    print(f" Report Generator: Demo mode ON - Calculated window using NEW LOGIC: 165mm / {wave_speed}mm/s = {time_window_seconds}s")
                 except Exception as e:
-                    print(f"⚠️ Could not get demo time window: {e}")
+                    print(f" Could not get demo time window: {e}")
                     time_window_seconds = None
         else:
-            print(f"🔍 Report Generator: Demo mode is OFF")
+            print(f" Report Generator: Demo mode is OFF")
     
     # Calculate number of samples to capture based on demo mode OR BPM + wave_speed
     calculated_time_window = None  # Initialize for use in data loading section
@@ -1951,7 +1972,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         # In demo mode: only capture data visible in one window frame
         calculated_time_window = time_window_seconds
         num_samples_to_capture = int(time_window_seconds * samples_per_second)
-        print(f"📊 DEMO MODE: Master drawing will capture only {num_samples_to_capture} samples ({time_window_seconds}s window)")
+        print(f" DEMO MODE: Master drawing will capture only {num_samples_to_capture} samples ({time_window_seconds}s window)")
     else:
         # Normal mode: Calculate time window based on wave_speed ONLY (NEW LOGIC)
         # This ensures proper number of beats are displayed based on graph width
@@ -1968,7 +1989,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         
         # Recalculate with actual sampling rate
         num_samples_to_capture = int(calculated_time_window * computed_sampling_rate)
-        print(f"📊 NORMAL MODE: Calculated time window: {calculated_time_window:.2f}s")
+        print(f" NORMAL MODE: Calculated time window: {calculated_time_window:.2f}s")
         print(f"   Based on BPM={hr_bpm_value} and wave_speed={wave_speed_mm_s}mm/s")
         print(f"   Will capture {num_samples_to_capture} samples (at {computed_sampling_rate}Hz)")
         if hr_bpm_value > 0:
@@ -2039,7 +2060,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                         calculated_data = calculate_derived_lead(lead, lead_i_centered, lead_ii_centered)
                         if calculated_data is not None:
                             raw_data = calculated_data.tolist() if isinstance(calculated_data, np.ndarray) else calculated_data
-                            print(f"✅ Calculated {lead} from saved I and II data (baseline-subtracted): {len(raw_data)} points")
+                            print(f" Calculated {lead} from saved I and II data (baseline-subtracted): {len(raw_data)} points")
                         else:
                             # Fallback to saved data if calculation fails
                             lead_name_for_saved = lead.replace("-aVR", "aVR")
@@ -2050,7 +2071,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                             else:
                                 raw_data = []
                     else:
-                        print(f"⚠️ Cannot calculate {lead}: I or II data missing in saved file")
+                        print(f" Cannot calculate {lead}: I or II data missing in saved file")
                         raw_data = []
                 else:
                     # For non-calculated leads, use saved data directly
@@ -2066,7 +2087,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                     # Check if saved data has enough samples for calculated time window
                     saved_data_samples = len(raw_data)
                     if saved_data_samples < num_samples_to_capture:
-                        print(f"⚠️ SAVED FILE {lead} has only {saved_data_samples} samples, need {num_samples_to_capture} for {calculated_time_window:.2f}s window")
+                        print(f" SAVED FILE {lead} has only {saved_data_samples} samples, need {num_samples_to_capture} for {calculated_time_window:.2f}s window")
                         print(f"   Will use ALL saved data ({saved_data_samples} samples) - may show fewer beats than calculated")
                         # Use all available saved data (don't filter)
                         raw_data_to_use = raw_data
@@ -2079,7 +2100,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                         real_data_available = True
                         time_window_str = f"{calculated_time_window:.2f}s" if calculated_time_window else "auto"
                         actual_time_window = len(real_ecg_data) / computed_sampling_rate if computed_sampling_rate > 0 else 0
-                        print(f"✅ Using SAVED FILE {lead} data: {len(real_ecg_data)} points (requested: {time_window_str}, actual: {actual_time_window:.2f}s, std: {np.std(real_ecg_data):.2f})")
+                        print(f" Using SAVED FILE {lead} data: {len(real_ecg_data)} points (requested: {time_window_str}, actual: {actual_time_window:.2f}s, std: {np.std(real_ecg_data):.2f})")
             
             # Priority 2: Fallback to live dashboard data (if saved data not available OR has insufficient samples)
             # Check if live data has MORE samples than saved data
@@ -2289,14 +2310,14 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                 # Add path to master drawing
                 master_drawing.add(ecg_path)
                 
-                print(f"✅ Drew {len(real_ecg_data)} ECG data points for Lead {lead}")
+                print(f" Drew {len(real_ecg_data)} ECG data points for Lead {lead}")
             else:
-                print(f"📋 No real data for Lead {lead} - showing grid only")
+                print(f" No real data for Lead {lead} - showing grid only")
             
             successful_graphs += 1
             
         except Exception as e:
-            print(f"❌ Error adding Lead {lead}: {e}")
+            print(f" Error adding Lead {lead}: {e}")
             import traceback
             traceback.print_exc()
     
@@ -2381,7 +2402,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     qrs_amp_mv = data.get('qrs_amp', 0.0)
     t_amp_mv = data.get('t_amp', 0.0)
     
-    print(f"🔬 Report Generator - Received wave amplitudes from data:")
+    print(f" Report Generator - Received wave amplitudes from data:")
     print(f"   p_amp: {p_amp_mv}, qrs_amp: {qrs_amp_mv}, t_amp: {t_amp_mv}")
     print(f"   Available keys in data: {list(data.keys())}")
     
@@ -2439,9 +2460,9 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
             if p_amp_mv<=0: p_amp_mv = cp
             if qrs_amp_mv<=0: qrs_amp_mv = cqrs
             if t_amp_mv<=0: t_amp_mv = ct
-            print(f"🔁 Fallback computed amplitudes from Lead II: P={p_amp_mv:.4f}, QRS={qrs_amp_mv:.4f}, T={t_amp_mv:.4f}")
+            print(f" Fallback computed amplitudes from Lead II: P={p_amp_mv:.4f}, QRS={qrs_amp_mv:.4f}, T={t_amp_mv:.4f}")
         except Exception as e:
-            print(f"⚠️ Fallback amplitude computation failed: {e}")
+            print(f" Fallback amplitude computation failed: {e}")
 
     # Calculate P/QRS/T Axis in degrees (using Lead I and Lead aVF)
     p_axis_deg = "--"
@@ -2596,7 +2617,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                                     p_axis_num_normalized = p_axis_num
                                 
                                 # Debug: Print HR and P axis for troubleshooting
-                                print(f"🔍 P axis validation: HR={estimated_hr:.1f} BPM, P_axis={p_axis_num}°, normalized={p_axis_num_normalized}°")
+                                print(f" P axis validation: HR={estimated_hr:.1f} BPM, P_axis={p_axis_num}°, normalized={p_axis_num_normalized}°")
                                 
                                 # Check if P axis is in normal range (0 to 75°)
                                 # P axis normal range: 0° to +75°
@@ -2706,13 +2727,13 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                                     if best_p_axis:
                                         p_axis_deg = best_p_axis
                                         if best_p_axis != p_axis_result:
-                                            print(f"⚠️ P axis adjusted using fallback method: {p_axis_deg} (original: {p_axis_result}, HR: {estimated_hr:.0f} BPM)")
+                                            print(f" P axis adjusted using fallback method: {p_axis_deg} (original: {p_axis_result}, HR: {estimated_hr:.0f} BPM)")
                                         else:
-                                            print(f"⚠️ P axis value: {p_axis_deg} (may be less accurate at HR {estimated_hr:.0f} BPM)")
+                                            print(f" P axis value: {p_axis_deg} (may be less accurate at HR {estimated_hr:.0f} BPM)")
                                     else:
                                         # Last resort: use original value even if abnormal
                                         p_axis_deg = p_axis_result
-                                        print(f"⚠️ P axis value: {p_axis_deg} (calculated at HR {estimated_hr:.0f} BPM, may be less accurate)")
+                                        print(f" P axis value: {p_axis_deg} (calculated at HR {estimated_hr:.0f} BPM, may be less accurate)")
                         else:
                             # If less than 2 P peaks detected, try to calculate with available peaks
                             if len(p_peaks) >= 1:
@@ -2720,7 +2741,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                                 p_axis_result_single = calculate_wave_axis(lead_I_filt, lead_aVF_filt, p_peaks, fs, 20, 60)
                                 if p_axis_result_single != "--":
                                     p_axis_deg = p_axis_result_single
-                                    print(f"⚠️ P axis calculated with limited peaks: {p_axis_deg} (HR: {estimated_hr:.0f} BPM, may be less accurate)")
+                                    print(f" P axis calculated with limited peaks: {p_axis_deg} (HR: {estimated_hr:.0f} BPM, may be less accurate)")
                             else:
                                 # Last resort: try to estimate from R-peaks timing
                                 # Use average PR interval assumption (150ms) to estimate P wave position
@@ -2735,7 +2756,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                                         p_axis_result_est = calculate_wave_axis(lead_I_filt, lead_aVF_filt, estimated_p_peaks, fs, 20, 60)
                                         if p_axis_result_est != "--":
                                             p_axis_deg = p_axis_result_est
-                                            print(f"⚠️ P axis estimated from R-peaks timing: {p_axis_deg} (HR: {estimated_hr:.0f} BPM, estimated)")
+                                            print(f" P axis estimated from R-peaks timing: {p_axis_deg} (HR: {estimated_hr:.0f} BPM, estimated)")
                         
                         # Detect T peaks (100-300ms after R peaks)
                         t_peaks = []
@@ -2753,9 +2774,9 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                             if t_axis_result != "--":
                                 t_axis_deg = t_axis_result
                         
-                        print(f"🔬 Calculated P/QRS/T Axis: P={p_axis_deg}, QRS={qrs_axis_deg}, T={t_axis_deg}")
+                        print(f" Calculated P/QRS/T Axis: P={p_axis_deg}, QRS={qrs_axis_deg}, T={t_axis_deg}")
         except Exception as e:
-            print(f"⚠️ Axis calculation failed: {e}")
+            print(f" Axis calculation failed: {e}")
             import traceback
             traceback.print_exc()
         
@@ -2789,7 +2810,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     rv5_amp = data.get('rv5', 0.0)
     sv1_amp = data.get('sv1', 0.0)
     
-    print(f"🔬 Report Generator - Received RV5/SV1 from data:")
+    print(f" Report Generator - Received RV5/SV1 from data:")
     print(f"   rv5: {rv5_amp}, sv1: {sv1_amp}")
     
     # If missing/zero, compute from V5 and V1 of last 10 seconds (GE/Hospital Standard)
@@ -2882,9 +2903,9 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                             vals.append(s_amp_mv)
                 if len(vals)>0 and sv1_amp==0.0:
                     sv1_amp = float(np.median(vals))  # Median beat approach, negative value
-            print(f"🔁 Fallback computed RV5/SV1: RV5={rv5_amp:.4f}, SV1={sv1_amp:.4f}")
+            print(f" Fallback computed RV5/SV1: RV5={rv5_amp:.4f}, SV1={sv1_amp:.4f}")
         except Exception as e:
-            print(f"⚠️ Fallback RV5/SV1 computation failed: {e}")
+            print(f" Fallback RV5/SV1 computation failed: {e}")
 
     # Unit conversion: GE/Hospital Standard - Values must be in mV
     # CRITICAL: calculate_wave_amplitudes() now returns values in mV (converted from ADC counts)
@@ -2990,7 +3011,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     
     # DYNAMIC conclusions from dashboard in the box - ONLY REAL CONCLUSIONS (no empty/---)
     # Split filtered conclusions into rows (2 conclusions per row) - COMPACT SPACING
-    print(f"🎨 Drawing conclusions in graph from filtered list: {filtered_conclusions}")
+    print(f" Drawing conclusions in graph from filtered list: {filtered_conclusions}")
     
     # Calculate how many rows we need based on actual conclusions
     num_conclusions = len(filtered_conclusions)
@@ -3028,7 +3049,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
             
             conclusion_num += 1  # Increment for next conclusion
 
-    print(f"✅ Added Patient Info, Vital Parameters, {len(filtered_conclusions)} REAL Conclusions (no empty/---), and Doctor Name/Signature to ECG grid")
+    print(f" Added Patient Info, Vital Parameters, {len(filtered_conclusions)} REAL Conclusions (no empty/---), and Doctor Name/Signature to ECG grid")
     
     # STEP 5: Add SINGLE master drawing to story (NO containers)
     story.append(master_drawing)
@@ -3039,16 +3060,16 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
     # Final summary
     if is_demo_mode:
         print(f"\n{'='*60}")
-        print(f"📊 DEMO MODE REPORT SUMMARY:")
+        print(f" DEMO MODE REPORT SUMMARY:")
         print(f"   • Total leads processed: {successful_graphs}/12")
         print(f"   • Demo mode: {'ON' if is_demo_mode else 'OFF'}")
         if successful_graphs == 0:
-            print(f"   ⚠️ WARNING: No ECG graphs were added to the report!")
-            print(f"   💡 SOLUTION: Ensure demo is running for 5-10 seconds before generating report")
+            print(f"    WARNING: No ECG graphs were added to the report!")
+            print(f"    SOLUTION: Ensure demo is running for 5-10 seconds before generating report")
         elif successful_graphs < 12:
-            print(f"   ⚠️ WARNING: Only {successful_graphs} graphs added (expected 12)")
+            print(f"    WARNING: Only {successful_graphs} graphs added (expected 12)")
         else:
-            print(f"   ✅ SUCCESS: All 12 ECG graphs added successfully!")
+            print(f"    SUCCESS: All 12 ECG graphs added successfully!")
         print(f"{'='*60}\n")
 
     # Measurement info (NO background)
@@ -3176,9 +3197,9 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         
         # STEP 2: Draw logo on all pages (existing code)
         # Prefer PNG (ReportLab-friendly); fallback to WebP if PNG missing
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        png_path = os.path.join(base_dir, "assets", "Deckmountimg.png")
-        webp_path = os.path.join(base_dir, "assets", "Deckmount.webp")
+        # Use resource_path helper for PyInstaller compatibility
+        png_path = _get_resource_path("assets/Deckmountimg.png")
+        webp_path = _get_resource_path("assets/Deckmount.webp")
         logo_path = png_path if os.path.exists(png_path) else webp_path
 
         if os.path.exists(logo_path):
@@ -3263,7 +3284,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         # Persist as a flat list for simplicity
         with open(index_path, 'w') as f:
             json.dump(existing_list, f, indent=2)
-        print(f"✓ Saved parameters to {index_path}")
+        print(f" Saved parameters to {index_path}")
 
         # Save ONLY the 11 metrics in a lightweight separate JSON file (append to list)
         metrics_entry = {
@@ -3296,13 +3317,13 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
 
         with open(metrics_path, 'w') as f:
             json.dump(metrics_list, f, indent=2)
-        print(f"✓ Saved 11 metrics to {metrics_path}")
+        print(f" Saved 11 metrics to {metrics_path}")
     except Exception as e:
-        print(f"⚠️ Could not save parameters JSON: {e}")
+        print(f" Could not save parameters JSON: {e}")
 
     # Build PDF
     doc.build(story, onFirstPage=_draw_logo_and_footer, onLaterPages=_draw_logo_and_footer)
-    print(f"✓ ECG Report generated: {filename}")
+    print(f" ECG Report generated: {filename}")
     
     # Upload to cloud if configured
     try:
@@ -3312,7 +3333,7 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
         
         cloud_uploader = get_cloud_uploader()
         if cloud_uploader.is_configured():
-            print(f"☁️  Uploading report to cloud ({cloud_uploader.cloud_service})...")
+            print(f"  Uploading report to cloud ({cloud_uploader.cloud_service})...")
             
             # Prepare metadata
             upload_metadata = {
@@ -3331,14 +3352,14 @@ def generate_ecg_report(filename="ecg_report.pdf", data=None, lead_images=None, 
                 if 'url' in result:
                     print(f"  URL: {result['url']}")
             else:
-                print(f"⚠️  Cloud upload failed: {result.get('message', 'Unknown error')}")
+                print(f"  Cloud upload failed: {result.get('message', 'Unknown error')}")
         else:
-            print("ℹ️  Cloud upload not configured (see cloud_config_template.txt)")
+            print("  Cloud upload not configured (see cloud_config_template.txt)")
             
     except ImportError:
-        print("ℹ️  Cloud uploader not available")
+        print("  Cloud uploader not available")
     except Exception as e:
-        print(f"⚠️  Cloud upload error: {e}")
+        print(f"  Cloud upload error: {e}")
 
 
 # ==================== HYPERKALEMIA REPORT WRAPPER ====================
@@ -3415,7 +3436,7 @@ def generate_hyperkalemia_report(filename, analysis_results, lead_ii_data, sampl
     from utils.settings_manager import SettingsManager
     settings_manager = SettingsManager()
     
-    print(f"📤 Calling generate_hyperkalemia_ecg_report with ecg_data_file: {ecg_data_file}")
+    print(f" Calling generate_hyperkalemia_ecg_report with ecg_data_file: {ecg_data_file}")
     
     return generate_hyperkalemia_ecg_report(
         filename=filename,
@@ -3451,7 +3472,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
     os.makedirs(reports_dir, exist_ok=True)
     
     if lead_ii_data is None or len(lead_ii_data) == 0:
-        print("⚠️ No Lead II data provided for Hyperkalemia ECG report")
+        print(" No Lead II data provided for Hyperkalemia ECG report")
         return None
     
     # ==================== INITIALIZE (EXACT SAME AS MAIN REPORT) ====================
@@ -3493,10 +3514,10 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
                     for i in range(len(all_metrics)-1, -1, -1):
                         if all_metrics[i].get("HR_bpm", 0) > 0:
                             latest_metrics = all_metrics[i]
-                            print(f"📊 Hyperkalemia Report: Found last valid metric entry (index {i}) with HR_bpm > 0")
+                            print(f" Hyperkalemia Report: Found last valid metric entry (index {i}) with HR_bpm > 0")
                             break
         except Exception as e:
-            print(f"⚠️ Could not find last valid metric: {e}")
+            print(f" Could not find last valid metric: {e}")
     
     hr_bpm_value = 0
     
@@ -3504,20 +3525,20 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
     if latest_metrics:
         hr_bpm_value = _safe_int(latest_metrics.get("HR_bpm"))
         if hr_bpm_value > 0:
-            print(f"📊 Hyperkalemia Report: Using HR_bpm from metrics.json: {hr_bpm_value} bpm (timestamp: {latest_metrics.get('timestamp', 'N/A')})")
+            print(f" Hyperkalemia Report: Using HR_bpm from metrics.json: {hr_bpm_value} bpm (timestamp: {latest_metrics.get('timestamp', 'N/A')})")
     
     # Priority 2: Fallback to data parameter
     if hr_bpm_value == 0:
         hr_candidate = data.get("HR_bpm") or data.get("Heart_Rate") or data.get("HR")
         hr_bpm_value = _safe_int(hr_candidate)
         if hr_bpm_value > 0:
-            print(f"📊 Hyperkalemia Report: Using HR_bpm from data parameter: {hr_bpm_value} bpm")
+            print(f" Hyperkalemia Report: Using HR_bpm from data parameter: {hr_bpm_value} bpm")
     
     # Priority 3: Fallback to HR_avg
     if hr_bpm_value == 0 and data.get("HR_avg"):
         hr_bpm_value = _safe_int(data.get("HR_avg"))
         if hr_bpm_value > 0:
-            print(f"📊 Hyperkalemia Report: Using HR_bpm from HR_avg: {hr_bpm_value} bpm")
+            print(f" Hyperkalemia Report: Using HR_bpm from HR_avg: {hr_bpm_value} bpm")
     
     # Save original HR_bpm from metrics.json (for reference - will NOT be changed)
     original_hr_bpm_from_metrics = hr_bpm_value  # This is from metrics.json (12-lead ECG)
@@ -3549,7 +3570,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
         if original_metrics_from_json["HR"] > 0 and original_metrics_from_json["RR_ms"] == 0:
             original_metrics_from_json["RR_ms"] = int(60000 / original_metrics_from_json["HR"])
         
-        print(f"📊 Hyperkalemia Report: Saved metrics.json values for Page 2 (ECG waves):")
+        print(f" Hyperkalemia Report: Saved metrics.json values for Page 2 (ECG waves):")
         print(f"   HR={original_metrics_from_json['HR']}, PR={original_metrics_from_json['PR']}, QRS={original_metrics_from_json['QRS']}")
         print(f"   QT={original_metrics_from_json['QT']}, QTc={original_metrics_from_json['QTc']}, ST={original_metrics_from_json['ST']}, RR={original_metrics_from_json['RR_ms']}")
         
@@ -3565,7 +3586,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
         if data.get("ST", 0) == 0:
             data["ST"] = original_metrics_from_json["ST"]
         
-        print(f"📊 Hyperkalemia Report: Loaded metrics from metrics.json: HR={data['HR']}, PR={data['PR']}, QRS={data['QRS']}, QT={data['QT']}, QTc={data['QTc']}, ST={data['ST']}")
+        print(f" Hyperkalemia Report: Loaded metrics from metrics.json: HR={data['HR']}, PR={data['PR']}, QRS={data['QRS']}, QT={data['QT']}, QTc={data['QTc']}, ST={data['ST']}")
     
     # Update beat value for observation table (SAME AS MAIN REPORT)
     if data.get("beat", 0) == 0:
@@ -3579,8 +3600,8 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
     filter_band = settings_manager.get_setting("filter_band", "0.5~35Hz")
     ac_frequency = settings_manager.get_setting("ac_frequency", "50")
     
-    print(f"📊 Hyperkalemia Report Settings: wave_speed={wave_speed_mm_s}mm/s, wave_gain={wave_gain_mm_mv}mm/mV")
-    print(f"📊 Hyperkalemia Report Final Metrics: HR={data['beat']}, PR={data['PR']}, QRS={data['QRS']}, QT={data['QT']}, QTc={data['QTc']}, ST={data['ST']}")
+    print(f" Hyperkalemia Report Settings: wave_speed={wave_speed_mm_s}mm/s, wave_gain={wave_gain_mm_mv}mm/mV")
+    print(f" Hyperkalemia Report Final Metrics: HR={data['beat']}, PR={data['PR']}, QRS={data['QRS']}, QT={data['QT']}, QTc={data['QTc']}, ST={data['ST']}")
     
     # ==================== CALCULATE HEART RATE FROM 5 MINUTES (BEFORE REPORT GENERATION) ====================
     # Calculate average Heart Rate from 5 minutes of data (to use in report)
@@ -3677,7 +3698,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
         # 5 minutes = 300 seconds = 300000 milliseconds
         avg_hr_from_5_minutes = 300000 / sum_of_avg_rr if sum_of_avg_rr > 0 else data.get('HR_avg')
         
-        print(f"📊 Hyperkalemia-Specific Heart Rate Calculation (NEW METHOD - 300000 / sum of avg RR per minute):")
+        print(f" Hyperkalemia-Specific Heart Rate Calculation (NEW METHOD - 300000 / sum of avg RR per minute):")
         print(f"   Original HR_bpm from metrics.json (12-lead ECG): {original_hr_bpm_from_metrics} bpm (NOT CHANGED)")
         print(f"   ─────────────────────────────────────────────────────────────")
         print(f"   Average RR per minute: {[round(r, 1) for r in avg_rr_per_minute[:5]]} ms")
@@ -3690,8 +3711,8 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
         for i, hr_val in enumerate(hr_per_minute_for_report):
             print(f"   Min {i+1}: {hr_val:.2f} bpm")
         print(f"   ─────────────────────────────────────────────────────────────")
-        print(f"   ✅ Hyperkalemia-Specific BPM: {round(avg_hr_from_5_minutes)} bpm (WILL BE SAVED to metrics.json as HR_bpm)")
-        print(f"   ✅ Original 12-lead ECG HR_bpm: {original_hr_bpm_from_metrics} bpm (saved as Original_HR_bpm for reference)\n")
+        print(f"    Hyperkalemia-Specific BPM: {round(avg_hr_from_5_minutes)} bpm (WILL BE SAVED to metrics.json as HR_bpm)")
+        print(f"    Original 12-lead ECG HR_bpm: {original_hr_bpm_from_metrics} bpm (saved as Original_HR_bpm for reference)\n")
     else:
         # Fallback to old method if no average RR values found
         if len(avg_rr_per_minute) >= 5:
@@ -3699,7 +3720,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
             avg_hr_from_5_minutes = 300000 / sum_of_avg_rr if sum_of_avg_rr > 0 else data.get('HR_avg', 80)
         else:
             avg_hr_from_5_minutes = np.mean(hr_per_minute_for_report) if len(hr_per_minute_for_report) > 0 else data.get('HR_avg', 80)
-        print(f"⚠️ Using fallback method: {avg_hr_from_5_minutes:.2f} bpm")
+        print(f" Using fallback method: {avg_hr_from_5_minutes:.2f} bpm")
         print(f"   Original HR_bpm from metrics.json (12-lead ECG): {original_hr_bpm_from_metrics} bpm (NOT CHANGED)")
         print(f"   ─────────────────────────────────────────────────────────────")
         for i, hr_val in enumerate(hr_per_minute_for_report):
@@ -3708,8 +3729,8 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
         print(f"   Hyperkalemia Average HR (fallback): {avg_hr_from_5_minutes:.2f} bpm")
         print(f"   Calculation: ({hr_per_minute_for_report[0]:.1f} + {hr_per_minute_for_report[1]:.1f} + {hr_per_minute_for_report[2]:.1f} + {hr_per_minute_for_report[3]:.1f} + {hr_per_minute_for_report[4]:.1f}) / 5 = {avg_hr_from_5_minutes:.2f} bpm")
         print(f"   ─────────────────────────────────────────────────────────────")
-        print(f"   ✅ Hyperkalemia-Specific BPM: {round(avg_hr_from_5_minutes)} bpm (WILL BE SAVED to metrics.json as HR_bpm)")
-        print(f"   ✅ Original 12-lead ECG HR_bpm: {original_hr_bpm_from_metrics} bpm (saved as Original_HR_bpm for reference)\n")
+        print(f"    Hyperkalemia-Specific BPM: {round(avg_hr_from_5_minutes)} bpm (WILL BE SAVED to metrics.json as HR_bpm)")
+        print(f"    Original 12-lead ECG HR_bpm: {original_hr_bpm_from_metrics} bpm (saved as Original_HR_bpm for reference)\n")
     
     # Save Hyperkalemia-specific BPM separately (for Page 3 only)
     hyperkalemia_specific_bpm = round(avg_hr_from_5_minutes)
@@ -3826,9 +3847,9 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
             canvas.restoreState()
         
         # STEP 2: Draw logo (REPOSITIONED - lower from top)
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        png_path = os.path.join(base_dir, "assets", "Deckmountimg.png")
-        webp_path = os.path.join(base_dir, "assets", "Deckmount.webp")
+        # Use resource_path helper for PyInstaller compatibility
+        png_path = _get_resource_path("assets/Deckmountimg.png")
+        webp_path = _get_resource_path("assets/Deckmount.webp")
         logo_path = png_path if os.path.exists(png_path) else webp_path
         
         if os.path.exists(logo_path):
@@ -3927,7 +3948,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
                 return {}
             return patients_list[-1]  # latest entry
         except Exception as e:
-            print(f"⚠️ Could not load all_patients.json: {e}")
+            print(f" Could not load all_patients.json: {e}")
             return {}
     
     if patient is None:
@@ -3986,14 +4007,14 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
     if 'hyperkalemia_specific_bpm' in locals() and hyperkalemia_specific_bpm > 0:
         hyperkalemia_avg_for_page1 = hyperkalemia_specific_bpm
         if 'hr_per_minute_for_report' in locals() and len(hr_per_minute_for_report) >= 5:
-            print(f"📄 Page 1: Average Heart Rate = {hyperkalemia_avg_for_page1} bpm (Hyperkalemia-specific, from 5 minutes)")
+            print(f" Page 1: Average Heart Rate = {hyperkalemia_avg_for_page1} bpm (Hyperkalemia-specific, from 5 minutes)")
             print(f"   Per-minute values: {[round(h, 1) for h in hr_per_minute_for_report[:5]]}")
             print(f"   Calculation: ({hr_per_minute_for_report[0]:.1f} + {hr_per_minute_for_report[1]:.1f} + {hr_per_minute_for_report[2]:.1f} + {hr_per_minute_for_report[3]:.1f} + {hr_per_minute_for_report[4]:.1f}) / 5 = {hyperkalemia_avg_for_page1} bpm")
         else:
-            print(f"📄 Page 1: Average Heart Rate = {hyperkalemia_avg_for_page1} bpm (Hyperkalemia-specific)")
+            print(f" Page 1: Average Heart Rate = {hyperkalemia_avg_for_page1} bpm (Hyperkalemia-specific)")
     else:
         hyperkalemia_avg_for_page1 = page1_hr
-        print(f"📄 Page 1: Average Heart Rate = {hyperkalemia_avg_for_page1} bpm (from metrics.json)")
+        print(f" Page 1: Average Heart Rate = {hyperkalemia_avg_for_page1} bpm (from metrics.json)")
     
     # Calculate Max and Min from 5 per-minute values
     if 'hr_per_minute_for_report' in locals() and len(hr_per_minute_for_report) >= 5:
@@ -4002,7 +4023,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
         hyperkalemia_max_hr = int(round(max(hr_values_5min)))
         hyperkalemia_min_hr = int(round(min(hr_values_5min)))
         
-        print(f"📊 Page 1 Report Overview - Hyperkalemia Values from 5 minutes:")
+        print(f" Page 1 Report Overview - Hyperkalemia Values from 5 minutes:")
         print(f"   Per-minute HR values: {[round(h, 1) for h in hr_values_5min]}")
         print(f"   Maximum Heart Rate: {hyperkalemia_max_hr} bpm (from: {round(max(hr_values_5min), 1)} bpm)")
         print(f"   Minimum Heart Rate: {hyperkalemia_min_hr} bpm (from: {round(min(hr_values_5min), 1)} bpm)")
@@ -4010,7 +4031,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
     else:
         hyperkalemia_max_hr = data.get("HR_max", 0)
         hyperkalemia_min_hr = data.get("HR_min", 0)
-        print(f"⚠️ Page 1 Report Overview: Using fallback values (Max: {hyperkalemia_max_hr}, Min: {hyperkalemia_min_hr})")
+        print(f" Page 1 Report Overview: Using fallback values (Max: {hyperkalemia_max_hr}, Min: {hyperkalemia_min_hr})")
     
     overview_data = [
         ["Maximum Heart Rate:", f'{hyperkalemia_max_hr} bpm'],  
@@ -4157,7 +4178,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
     
     # ==================== PAGE 2: V1-V6 LEADS + LEAD II (LANDSCAPE MODE) ====================
     
-    print("📊 Creating master drawing with V1-V6 leads (2 columns) + Lead II (bottom) in LANDSCAPE...")
+    print(" Creating master drawing with V1-V6 leads (2 columns) + Lead II (bottom) in LANDSCAPE...")
     
     # Landscape A4 frame dimensions (landscape_width - 40, landscape_height - 40)
     # A4 landscape: 842 x 595, minus reduced margins (20 each side) = 802 x 555
@@ -4174,7 +4195,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
             with open(ecg_data_file, 'r') as f:
                 saved_ecg_data = json.load(f)
         except Exception as e:
-            print(f"⚠️ Could not load provided ECG data file: {e}")
+            print(f" Could not load provided ECG data file: {e}")
     
     # Priority 2: Find latest ECG data file if no file was provided
     if not saved_ecg_data:
@@ -4188,7 +4209,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
                     with open(latest_file, 'r') as f:
                         saved_ecg_data = json.load(f)
                 except Exception as e:
-                    print(f"⚠️ Could not load ECG data: {e}")
+                    print(f" Could not load ECG data: {e}")
     
     # Lead-specific ADC per box multipliers (from main report)
     adc_per_box_config = {
@@ -4483,10 +4504,10 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
                 master_drawing.add(notch_path)
             if dotted_path:
                 master_drawing.add(dotted_path)
-        print(f"✅ Added Lead II graph at bottom ({len(lead_ii_values)} samples)")
+        print(f" Added Lead II graph at bottom ({len(lead_ii_values)} samples)")
                 
     successful_graphs = len([l for l in left_leads + right_leads if l in v_leads_data]) + (1 if lead_ii_data else 0)
-    print(f"✅ Created {successful_graphs} ECG graphs: V1-V6 ({len([l for l in left_leads + right_leads if l in v_leads_data])}) + Lead II")
+    print(f" Created {successful_graphs} ECG graphs: V1-V6 ({len([l for l in left_leads + right_leads if l in v_leads_data])}) + Lead II")
     
     # ==================== ADD PATIENT INFO TO PAGE 2 (LANDSCAPE MODE - POSITIONED PROPERLY) ====================
     
@@ -4541,7 +4562,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
         else:
             RR = original_metrics_from_json.get('RR_ms', 0)
         
-        print(f"📊 Page 2 (ECG waves): HR={HR} bpm (Hyperkalemia-specific average, 5 minutes) - Same as Page 1")
+        print(f" Page 2 (ECG waves): HR={HR} bpm (Hyperkalemia-specific average, 5 minutes) - Same as Page 1")
         print(f"   Other metrics from metrics.json: PR={PR}, QRS={QRS}, QT={QT}, QTc={QTc}, ST={ST}, RR={RR}")
     else:
         # Fallback to data values if original_metrics_from_json not available
@@ -4555,7 +4576,7 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
         QTc = data.get('QTc', 0)
         ST = data.get('ST', 0)
         RR = int(60000 / HR) if HR and HR > 0 else 0
-        print(f"⚠️ Page 2 (ECG waves): Using fallback values - HR={HR} bpm")
+        print(f" Page 2 (ECG waves): Using fallback values - HR={HR} bpm")
     
     # LEFT COLUMN (130, y) - HR, PR, QRS, RR (SHIFTED UP BY 20 POINTS)
     hr_label = String(130, 548, f"HR    : {HR} bpm", fontSize=10, fontName="Helvetica", fillColor=colors.black)
@@ -4653,14 +4674,14 @@ def generate_hyperkalemia_ecg_report(filename="hyperkalemia_ecg_report.pdf", lea
     story.append(master_drawing)
     # story.append(Spacer(1, 15))  # REMOVED - was creating unwanted 3rd page
     
-    print(f"📊 Added master drawing with V1-V6 leads + Lead II graph")
-    print(f"📊 Story contains {len(story)} elements before PDF build")
+    print(f" Added master drawing with V1-V6 leads + Lead II graph")
+    print(f" Story contains {len(story)} elements before PDF build")
     
     # Build PDF (2 pages only: Portrait page 1, Landscape page 2)
     doc.build(story)
-    print(f"✅ Hyperkalemia ECG Report generated: {filename}")
-    print(f"   📄 Page 1: Patient Details + Observation + Conclusion (Portrait)")
-    print(f"   📄 Page 2: V1-V6 Leads (2 columns) + Lead II (bottom) (Landscape)")
+    print(f" Hyperkalemia ECG Report generated: {filename}")
+    print(f"    Page 1: Patient Details + Observation + Conclusion (Portrait)")
+    print(f"    Page 2: V1-V6 Leads (2 columns) + Lead II (bottom) (Landscape)")
     
     return filename
 

@@ -62,7 +62,6 @@ This document describes the **clinical-grade P/QRS/T axis calculation** implemen
 
 **Methods**:
 - `calculate_p_axis_from_median()` - P-wave axis
-- `calculate_qrs_axis_from_median()` - QRS axis
 - `calculate_t_axis_from_median()` - T-wave axis
 
 **Integration Point**: `calculate_ecg_metrics()`

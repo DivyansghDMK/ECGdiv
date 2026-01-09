@@ -13,7 +13,7 @@ try:
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
-    print("⚠️ OpenAI not installed. Install with: pip install openai")
+    print(" OpenAI not installed. Install with: pip install openai")
 
 # Try to import Anthropic Claude (optional dependency)
 try:
@@ -47,7 +47,7 @@ class AIReportEnhancer:
             self.enabled = True
         else:
             self.enabled = False
-            print("⚠️ AI features disabled. Set OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable.")
+            print(" AI features disabled. Set OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable.")
     
     def generate_executive_summary(self, metrics: Dict, arrhythmias: List[str], 
                                    patient_data: Optional[Dict] = None) -> str:
@@ -93,7 +93,7 @@ class AIReportEnhancer:
                 return message.content[0].text.strip()
         
         except Exception as e:
-            print(f"⚠️ AI API error: {e}")
+            print(f" AI API error: {e}")
             return self._generate_fallback_summary(metrics, arrhythmias)
     
     def generate_intelligent_findings(self, metrics: Dict, arrhythmias: List[str],
@@ -116,7 +116,6 @@ class AIReportEnhancer:
         - QRS Duration: {metrics.get('QRS', 'N/A')} ms
         - QTc Interval: {metrics.get('QTc', 'N/A')} ms
         - ST Segment: {metrics.get('ST', 'N/A')} mV
-        - QRS Axis: {metrics.get('QRS_Axis', 'N/A')}°
         
         Detected Arrhythmias: {', '.join(arrhythmias) if arrhythmias else 'None'}
         
@@ -147,7 +146,7 @@ class AIReportEnhancer:
                 return result.get('findings', [])
         
         except Exception as e:
-            print(f"⚠️ AI API error: {e}")
+            print(f" AI API error: {e}")
             return self._generate_fallback_findings(metrics, arrhythmias)
     
     def calculate_risk_score(self, metrics: Dict, arrhythmias: List[str],
@@ -259,7 +258,6 @@ class AIReportEnhancer:
         - QRS Duration: {metrics.get('QRS', 'N/A')} ms
         - QTc Interval: {metrics.get('QTc', 'N/A')} ms
         - ST Segment: {metrics.get('ST', 'N/A')} mV
-        - QRS Axis: {metrics.get('QRS_Axis', 'N/A')}°
         
         Detected Arrhythmias: {', '.join(arrhythmias) if arrhythmias else 'None detected'}
         

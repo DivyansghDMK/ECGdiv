@@ -7,6 +7,12 @@ This script launches the ECG Monitor application from the root directory.
 import sys
 import os
 
+# Fix encoding for Windows PowerShell (cp1252 can't handle emojis)
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 # Add the src directory to the Python path
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src')
 if src_dir not in sys.path:
@@ -21,9 +27,9 @@ try:
     if __name__ == "__main__":
         main()
 except ImportError as e:
-    print(f"❌ Error importing main application: {e}")
-    print("💡 Make sure you're running from the project root directory")
+    print(f" Error importing main application: {e}")
+    print(" Make sure you're running from the project root directory")
     sys.exit(1)
 except Exception as e:
-    print(f"❌ Error running application: {e}")
+    print(f" Error running application: {e}")
     sys.exit(1)

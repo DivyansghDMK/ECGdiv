@@ -23,8 +23,8 @@ try:
     from core.constants import SUCCESS_MESSAGES, ERROR_MESSAGES
     logger_available = True
 except ImportError as e:
-    print(f"⚠️ Core modules not available: {e}")
-    print("💡 Using fallback logging")
+    print(f" Core modules not available: {e}")
+    print(" Using fallback logging")
     logger_available = False
     
     # Fallback logging
@@ -45,8 +45,8 @@ except ImportError as e:
             return os.path.join(sys._MEIPASS, relative_path)
         return os.path.join(os.path.abspath("."), relative_path)
     
-    SUCCESS_MESSAGES = {"modules_loaded": "✅ Core modules imported successfully"}
-    ERROR_MESSAGES = {"import_error": "❌ Core module import error: {}"}
+    SUCCESS_MESSAGES = {"modules_loaded": " Core modules imported successfully"}
+    ERROR_MESSAGES = {"import_error": " Core module import error: {}"}
 
 # Initialize logger
 if logger_available:
@@ -174,15 +174,15 @@ class LoginRegisterDialog(QDialog):
                     movie.start()
                     print(" v.gif background started successfully")
                 else:
-                    print("❌ Invalid GIF file")
+                    print(" Invalid GIF file")
                     # Set fallback background
                     self.bg_label.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a1a2e, stop:1 #16213e);")
             except Exception as e:
-                print(f"❌ Error loading v.gif: {e}")
+                print(f" Error loading v.gif: {e}")
                 # Set fallback background
                 self.bg_label.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a1a2e, stop:1 #16213e);")
         else:
-            print("❌ v.gif not found in any expected location")
+            print(" v.gif not found in any expected location")
             print(f"Tried paths: {possible_gif_paths}")
             # Set fallback background
             self.bg_label.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a1a2e, stop:1 #16213e);")
@@ -313,7 +313,7 @@ class LoginRegisterDialog(QDialog):
             self.bg_label.setGeometry(0, 0, self.width(), self.height())
             # Make sure it's visible
             self.bg_label.setVisible(True)
-            logger.info("✅ Background visibility ensured")
+            logger.info(" Background visibility ensured")
         except Exception as e:
             logger.warning(f"Background visibility issue: {e}")
 
@@ -504,11 +504,43 @@ class LoginRegisterDialog(QDialog):
     def handle_phone_login(self):
         phone, ok = QInputDialog.getText(self, "Login with Phone Number", "Enter your phone number:")
         if ok and phone:
-            # Here you would implement phone-based authentication logic
-            QMessageBox.information(self, "Phone Login", f"Logged in with phone: {phone} (Demo)")
+            # Check if this is a new phone number (not in users)
+            users = load_users()
+            is_new_user = True
+            user_record = None
+            
+            # Check if phone number exists in users
+            for username, record in users.items():
+                if str(record.get('phone', '')) == str(phone):
+                    is_new_user = False
+                    user_record = record
+                    self.username = username
+                    break
+            
+            # If new user, create a record with signup date
+            if is_new_user:
+                from datetime import datetime
+                user_record = {
+                    'phone': phone,
+                    'contact': phone,
+                    'signup_date': datetime.now().strftime("%Y-%m-%d")
+                }
+                # Save new user to users.json
+                users[phone] = user_record
+                save_users(users)
+                self.username = phone
+                QMessageBox.information(self, "Phone Login", f"New user registered with phone: {phone}")
+            else:
+                # Existing user - check if signup_date exists, if not add it
+                if 'signup_date' not in user_record or not user_record.get('signup_date'):
+                    from datetime import datetime
+                    user_record['signup_date'] = datetime.now().strftime("%Y-%m-%d")
+                    users[self.username] = user_record
+                    save_users(users)
+                QMessageBox.information(self, "Phone Login", f"Logged in with phone: {phone}")
+            
             self.result = True
-            self.username = phone
-            self.user_details = {'contact': phone}
+            self.user_details = user_record
             self.accept()
 
     def handle_register(self):
@@ -562,14 +594,14 @@ class LoginRegisterDialog(QDialog):
             def upload_in_background():
                 result = uploader.upload_user_signup(user_data)
                 if result.get('status') == 'success':
-                    print(f"✅ User signup uploaded to cloud: {name}")
+                    print(f" User signup uploaded to cloud: {name}")
                 else:
-                    print(f"⚠️ Failed to upload user signup: {result.get('message', 'Unknown error')}")
+                    print(f" Failed to upload user signup: {result.get('message', 'Unknown error')}")
             
             thread = threading.Thread(target=upload_in_background, daemon=True)
             thread.start()
         except Exception as e:
-            print(f"⚠️ Error uploading user signup: {e}")
+            print(f" Error uploading user signup: {e}")
         
         QMessageBox.information(self, "Success", "Registration successful! You can now sign in.")
         self.stacked.setCurrentIndex(0)
