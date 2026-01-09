@@ -5,6 +5,7 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, Image, PageBreak
 )
 import os
+import sys
 import json
 import matplotlib.pyplot as plt  
 import matplotlib
@@ -12,6 +13,26 @@ import numpy as np
 
 # Set matplotlib to use non-interactive backend
 matplotlib.use('Agg')
+
+# ------------------------ Resource path helper for PyInstaller compatibility ------------------------
+
+def _get_resource_path(relative_path):
+    """
+    Get resource path that works both in development and when packaged as exe.
+    For PyInstaller: resources are in sys._MEIPASS
+    For development: resources are relative to project root
+    """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        if hasattr(sys, '_MEIPASS'):
+            base_path = sys._MEIPASS
+        else:
+            # Development mode - get path relative to this file
+            base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        return os.path.join(base_path, relative_path)
+    except Exception:
+        # Fallback to relative path
+        return os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "..", relative_path)
 
 # ------------------------ Conservative interpretation helpers ------------------------
 
@@ -36,7 +57,6 @@ def _build_conservative_conclusions(metrics, settings_manager=None, sampling_rat
     qt = _safe_float(metrics.get("QT"), None)
     qtc_bazett = _safe_float(metrics.get("QTc_Bazett") or metrics.get("QTc"), None)
     qtc_frid = _safe_float(metrics.get("QTc_Fridericia"), None)
-    axis_qrs = metrics.get("QRS_axis") or metrics.get("Axis") or "--"
 
     rv5 = _safe_float(metrics.get("RV5"), None)
     sv1 = _safe_float(metrics.get("SV1"), None)
@@ -116,9 +136,6 @@ def _build_conservative_conclusions(metrics, settings_manager=None, sampling_rat
         parts.append(f"QT {qt:.0f} ms")
     if qtc_bazett is not None:
         parts.append(f"QTc {qtc_bazett:.0f} ms")
-    if axis_qrs:
-        parts.append(f"Axis {axis_qrs}")
-    measured += "; ".join(parts) if parts else "not available"
 
     # Acquisition info
     acq_parts = []
@@ -190,8 +207,8 @@ def save_ecg_data_to_file(ecg_test_page, output_file=None):
     # Priority: Use ecg_buffers (5000 samples) if available, otherwise use data (1000 samples)
     
     # Debug: Check what attributes ecg_test_page has
-    print(f"🔍 DEBUG: ecg_test_page attributes check:")
-    print(f"   has ecg_buffers: {hasattr(ecg_test_page, 'ecg_buffers')}")
+    print(f" DEBUG: ecg_test_page attributes check:")
+    print(f"  has ecg_buffers: {hasattr(ecg_test_page, 'ecg_buffers')}")
     print(f"   has data: {hasattr(ecg_test_page, 'data')}")
     print(f"   has ptrs: {hasattr(ecg_test_page, 'ptrs')}")
     if hasattr(ecg_test_page, 'ecg_buffers'):
@@ -243,7 +260,7 @@ def save_ecg_data_to_file(ecg_test_page, output_file=None):
     if sample_counts:
         max_samples = max(sample_counts)
         min_samples = min(sample_counts)
-        print(f"📊 Buffer analysis: Max samples={max_samples}, Min samples={min_samples}")
+        print(f" Buffer analysis: Max samples={max_samples}, Min samples={min_samples}")
         
         # Calculate expected samples for 13.2s window at current sampling rate
         sampling_rate = saved_data.get("sampling_rate", 80.0)
@@ -530,7 +547,7 @@ def capture_real_ecg_graphs_from_dashboard(dashboard_instance=None, ecg_test_pag
             if hasattr(ecg_test_page, 'demo_manager') and ecg_test_page.demo_manager:
                 time_window_seconds = getattr(ecg_test_page.demo_manager, 'time_window', None)
                 samples_per_second = getattr(ecg_test_page.demo_manager, 'samples_per_second', 150)
-                print(f"🔍 DEMO MODE ON - Wave speed window: {time_window_seconds}s, Sampling rate: {samples_per_second}Hz")
+                print(f" DEMO MODE ON - Wave speed window: {time_window_seconds}s, Sampling rate: {samples_per_second}Hz")
             else:
                 # Fallback: calculate from wave speed setting
                 try:
@@ -540,9 +557,9 @@ def capture_real_ecg_graphs_from_dashboard(dashboard_instance=None, ecg_test_pag
                     # NEW LOGIC: Time window = 165mm / wave_speed (33 boxes × 5mm = 165mm)
                     ecg_graph_width_mm = 33 * 5  # 165mm
                     time_window_seconds = ecg_graph_width_mm / wave_speed
-                    print(f"🔍 DEMO MODE ON - Calculated window using NEW LOGIC: 165mm / {wave_speed}mm/s = {time_window_seconds}s")
+                    print(f" DEMO MODE ON - Calculated window using NEW LOGIC: 165mm / {wave_speed}mm/s = {time_window_seconds}s")
                 except Exception as e:
-                    print(f"⚠️ Could not get demo time window: {e}")
+                    print(f" Could not get demo time window: {e}")
                     time_window_seconds = None
     # Try to get REAL ECG data from the test page
     real_ecg_data = {}
@@ -733,7 +750,7 @@ def create_reportlab_ecg_drawing_with_real_data(lead_name, ecg_data, width=460, 
     t_sec = t_sec[mask]
     ecg_mv = ecg_mv[mask]
     if len(t_sec) == 0:
-        print(f"⚠️ ECG data empty after windowing for {lead_name}")
+        print(f" ECG data empty after windowing for {lead_name}")
         return drawing
 
     # Gain once: mm per mV
@@ -891,7 +908,7 @@ def get_dashboard_conclusions_from_image(dashboard_instance):
            
             
         ]
-        print("⚠️ Using zero-value fallback (no ECG data available)")
+        print(" Using zero-value fallback (no ECG data available)")
     
     # Ensure we have exactly 12 conclusions (pad with empty strings if needed)
     MAX_CONCLUSIONS = 12
@@ -943,6 +960,7 @@ def generate_ecg_report(
     patient=None,
     ecg_data_file=None,
     log_history=False,
+    username=None,
 ):
     """
     Generate ECG report PDF
@@ -978,7 +996,6 @@ def generate_ecg_report(
             "HR_min": 0,
             "HR_avg": 0,
             "Heart_Rate": 0,  # Add for compatibility with dashboard
-            "QRS_axis": "--",
         }
 
     # Define base_dir and reports_dir for file operations
@@ -1054,8 +1071,8 @@ def generate_ecg_report(
     data["wave_speed_mm_s"] = wave_speed_mm_s
     data["wave_gain_mm_mv"] = wave_gain_mm_mv
 
-    print(f"🧮 Pre-plot checks: HR_bpm={hr_bpm_value}, RR_ms={data['RR_ms']}, wave_speed={wave_speed_mm_s}mm/s, wave_gain={wave_gain_mm_mv}mm/mV, sampling_rate={computed_sampling_rate}Hz")
-    print(f"📐 Calculation-based beats formula:")
+    print(f" Pre-plot checks: HR_bpm={hr_bpm_value}, RR_ms={data['RR_ms']}, wave_speed={wave_speed_mm_s}mm/s, wave_gain={wave_gain_mm_mv}mm/mV, sampling_rate={computed_sampling_rate}Hz")
+    print(f" Calculation-based beats formula:")
     print(f"   Graph width: 33 boxes × 5mm = 165mm")
     print(f"   BPM window: (desired_beats × 60) / {hr_bpm_value} = {(6 * 60.0 / hr_bpm_value) if hr_bpm_value > 0 else 0:.2f}s")
     print(f"   Wave speed window: 165mm / {wave_speed_mm_s}mm/s = {165.0 / wave_speed_mm_s:.2f}s")
@@ -1204,7 +1221,7 @@ def generate_ecg_report(
     if ecg_test_page and hasattr(ecg_test_page, 'demo_toggle'):
         is_demo = ecg_test_page.demo_toggle.isChecked()
         if is_demo:
-            print("🔍 DEMO MODE DETECTED - Checking data availability...")
+            print(" DEMO MODE DETECTED - Checking data availability...")
             if hasattr(ecg_test_page, 'data') and len(ecg_test_page.data) > 0:
                 # Check if data has actual variation (not just zeros)
                 sample_data = ecg_test_page.data[0] if len(ecg_test_page.data) > 0 else []
@@ -1393,8 +1410,7 @@ def generate_ecg_report(
     obs_data = [
         ["Heart Rate", _fmt_bpm(data.get('beat')), "60-100"],                    
         ["PR Interval", _fmt_ms(data.get('PR')), "120 ms - 200 ms"],            
-        ["QRS Complex", _fmt_ms(data.get('QRS')), "70 ms - 120 ms"],            
-        ["QRS Axis", _fmt_deg(data.get('QRS_axis') or data.get('Axis')), "Normal"],         
+        ["QRS Complex", _fmt_ms(data.get('QRS')), "70 ms - 120 ms"],         
         ["QT Interval", _fmt_ms(data.get('QT')), "300 ms - 450 ms"],            
         ["QTCB (Bazett)", _fmt_ms(data.get('QTc')), "300 ms - 450 ms"],          
         ["QTCF (Fridericia)", _fmt_qtcf(data.get('QTc_Fridericia')), "300 ms - 450 ms"],          
@@ -1797,7 +1813,7 @@ def generate_ecg_report(
             if hasattr(ecg_test_page, 'demo_manager') and ecg_test_page.demo_manager:
                 time_window_seconds = getattr(ecg_test_page.demo_manager, 'time_window', None)
                 samples_per_second = getattr(ecg_test_page.demo_manager, 'samples_per_second', samples_per_second)
-                print(f"🔍 Report Generator: Demo mode ON - Wave speed window: {time_window_seconds}s, Sampling rate: {samples_per_second}Hz")
+                print(f" Report Generator: Demo mode ON - Wave speed window: {time_window_seconds}s, Sampling rate: {samples_per_second}Hz")
             else:
                 # Fallback: calculate from wave speed setting
                 try:
@@ -1807,12 +1823,12 @@ def generate_ecg_report(
                     # NEW LOGIC: Time window = 165mm / wave_speed (33 boxes × 5mm = 165mm)
                     ecg_graph_width_mm = 33 * 5  # 165mm
                     time_window_seconds = ecg_graph_width_mm / wave_speed
-                    print(f"🔍 Report Generator: Demo mode ON - Calculated window using NEW LOGIC: 165mm / {wave_speed}mm/s = {time_window_seconds}s")
+                    print(f" Report Generator: Demo mode ON - Calculated window using NEW LOGIC: 165mm / {wave_speed}mm/s = {time_window_seconds}s")
                 except Exception as e:
-                    print(f"⚠️ Could not get demo time window: {e}")
+                    print(f" Could not get demo time window: {e}")
                     time_window_seconds = None
         else:
-            print(f"🔍 Report Generator: Demo mode is OFF")
+            print(f" Report Generator: Demo mode is OFF")
     
     # Calculate number of samples to capture based on demo mode OR BPM + wave_speed
     calculated_time_window = None  # Initialize for use in data loading section
@@ -1820,7 +1836,7 @@ def generate_ecg_report(
         # In demo mode: only capture data visible in one window frame
         calculated_time_window = time_window_seconds
         num_samples_to_capture = int(time_window_seconds * samples_per_second)
-        print(f"📊 DEMO MODE: Master drawing will capture only {num_samples_to_capture} samples ({time_window_seconds}s window)")
+        print(f" DEMO MODE: Master drawing will capture only {num_samples_to_capture} samples ({time_window_seconds}s window)")
     else:
         # Normal mode: Calculate time window based on wave_speed ONLY (NEW LOGIC)
         # This ensures proper number of beats are displayed based on graph width
@@ -1837,7 +1853,7 @@ def generate_ecg_report(
         
         # Recalculate with actual sampling rate
         num_samples_to_capture = int(calculated_time_window * computed_sampling_rate)
-        print(f"📊 NORMAL MODE: Calculated time window: {calculated_time_window:.2f}s")
+        print(f" NORMAL MODE: Calculated time window: {calculated_time_window:.2f}s")
         print(f"   Based on BPM={hr_bpm_value} and wave_speed={wave_speed_mm_s}mm/s")
         print(f"   Will capture {num_samples_to_capture} samples (at {computed_sampling_rate}Hz)")
         if hr_bpm_value > 0:
@@ -1908,7 +1924,7 @@ def generate_ecg_report(
                         calculated_data = calculate_derived_lead(lead, lead_i_centered, lead_ii_centered)
                         if calculated_data is not None:
                             raw_data = calculated_data.tolist() if isinstance(calculated_data, np.ndarray) else calculated_data
-                            print(f"✅ Calculated {lead} from saved I and II data (baseline-subtracted): {len(raw_data)} points")
+                            print(f" Calculated {lead} from saved I and II data (baseline-subtracted): {len(raw_data)} points")
                         else:
                             # Fallback to saved data if calculation fails
                             lead_name_for_saved = lead.replace("-aVR", "aVR")
@@ -1919,7 +1935,7 @@ def generate_ecg_report(
                             else:
                                 raw_data = []
                     else:
-                        print(f"⚠️ Cannot calculate {lead}: I or II data missing in saved file")
+                        print(f" Cannot calculate {lead}: I or II data missing in saved file")
                         raw_data = []
                 else:
                     # For non-calculated leads, use saved data directly
@@ -1935,7 +1951,7 @@ def generate_ecg_report(
                     # Check if saved data has enough samples for calculated time window
                     saved_data_samples = len(raw_data)
                     if saved_data_samples < num_samples_to_capture:
-                        print(f"⚠️ SAVED FILE {lead} has only {saved_data_samples} samples, need {num_samples_to_capture} for {calculated_time_window:.2f}s window")
+                        print(f" SAVED FILE {lead} has only {saved_data_samples} samples, need {num_samples_to_capture} for {calculated_time_window:.2f}s window")
                         print(f"   Will use ALL saved data ({saved_data_samples} samples) - may show fewer beats than calculated")
                         # Use all available saved data (don't filter)
                         raw_data_to_use = raw_data
@@ -1948,7 +1964,7 @@ def generate_ecg_report(
                         real_data_available = True
                         time_window_str = f"{calculated_time_window:.2f}s" if calculated_time_window else "auto"
                         actual_time_window = len(real_ecg_data) / computed_sampling_rate if computed_sampling_rate > 0 else 0
-                        print(f"✅ Using SAVED FILE {lead} data: {len(real_ecg_data)} points (requested: {time_window_str}, actual: {actual_time_window:.2f}s, std: {np.std(real_ecg_data):.2f})")
+                        print(f" Using SAVED FILE {lead} data: {len(real_ecg_data)} points (requested: {time_window_str}, actual: {actual_time_window:.2f}s, std: {np.std(real_ecg_data):.2f})")
             
             # Priority 2: Fallback to live dashboard data (if saved data not available OR has insufficient samples)
             # Check if live data has MORE samples than saved data
@@ -2163,14 +2179,14 @@ def generate_ecg_report(
                 # Add path to master drawing
                 master_drawing.add(ecg_path)
                 
-                print(f"✅ Drew {len(real_ecg_data)} ECG data points for Lead {lead}")
+                print(f" Drew {len(real_ecg_data)} ECG data points for Lead {lead}")
             else:
-                print(f"📋 No real data for Lead {lead} - showing grid only")
+                print(f" No real data for Lead {lead} - showing grid only")
             
             successful_graphs += 1
             
         except Exception as e:
-            print(f"❌ Error adding Lead {lead}: {e}")
+            print(f" Error adding Lead {lead}: {e}")
             import traceback
             traceback.print_exc()
     
@@ -2289,7 +2305,7 @@ def generate_ecg_report(
             if hasattr(ecg_test_page, 'demo_manager') and ecg_test_page.demo_manager:
                 time_window_seconds = getattr(ecg_test_page.demo_manager, 'time_window', None)
                 samples_per_second = getattr(ecg_test_page.demo_manager, 'samples_per_second', samples_per_second)
-                print(f"🔍 Report Generator: Demo mode ON - Wave speed window: {time_window_seconds}s, Sampling rate: {samples_per_second}Hz")
+                print(f" Report Generator: Demo mode ON - Wave speed window: {time_window_seconds}s, Sampling rate: {samples_per_second}Hz")
             else:
                 # Fallback: calculate from wave speed setting
                 try:
@@ -2299,12 +2315,12 @@ def generate_ecg_report(
                     # NEW LOGIC: Time window = 165mm / wave_speed (33 boxes × 5mm = 165mm)
                     ecg_graph_width_mm = 33 * 5  # 165mm
                     time_window_seconds = ecg_graph_width_mm / wave_speed
-                    print(f"🔍 Report Generator: Demo mode ON - Calculated window using NEW LOGIC: 165mm / {wave_speed}mm/s = {time_window_seconds}s")
+                    print(f" Report Generator: Demo mode ON - Calculated window using NEW LOGIC: 165mm / {wave_speed}mm/s = {time_window_seconds}s")
                 except Exception as e:
-                    print(f"⚠️ Could not get demo time window: {e}")
+                    print(f" Could not get demo time window: {e}")
                     time_window_seconds = None
         else:
-            print(f"🔍 Report Generator: Demo mode is OFF")
+            print(f" Report Generator: Demo mode is OFF")
     
     # Calculate number of samples to capture based on demo mode OR BPM + wave_speed
     calculated_time_window = None  # Initialize for use in data loading section
@@ -2312,7 +2328,7 @@ def generate_ecg_report(
         # In demo mode: only capture data visible in one window frame
         calculated_time_window = time_window_seconds
         num_samples_to_capture = int(time_window_seconds * samples_per_second)
-        print(f"📊 DEMO MODE: Master drawing will capture only {num_samples_to_capture} samples ({time_window_seconds}s window)")
+        print(f" DEMO MODE: Master drawing will capture only {num_samples_to_capture} samples ({time_window_seconds}s window)")
     else:
         # Normal mode: Calculate time window based on wave_speed ONLY (NEW LOGIC)
         # This ensures proper number of beats are displayed based on graph width
@@ -2329,7 +2345,7 @@ def generate_ecg_report(
         
         # Recalculate with actual sampling rate
         num_samples_to_capture = int(calculated_time_window * computed_sampling_rate)
-        print(f"📊 NORMAL MODE: Calculated time window: {calculated_time_window:.2f}s")
+        print(f" NORMAL MODE: Calculated time window: {calculated_time_window:.2f}s")
         print(f"   Based on BPM={hr_bpm_value} and wave_speed={wave_speed_mm_s}mm/s")
         print(f"   Will capture {num_samples_to_capture} samples (at {computed_sampling_rate}Hz)")
         if hr_bpm_value > 0:
@@ -2400,7 +2416,7 @@ def generate_ecg_report(
                         calculated_data = calculate_derived_lead(lead, lead_i_centered, lead_ii_centered)
                         if calculated_data is not None:
                             raw_data = calculated_data.tolist() if isinstance(calculated_data, np.ndarray) else calculated_data
-                            print(f"✅ Calculated {lead} from saved I and II data (baseline-subtracted): {len(raw_data)} points")
+                            print(f" Calculated {lead} from saved I and II data (baseline-subtracted): {len(raw_data)} points")
                         else:
                             # Fallback to saved data if calculation fails
                             lead_name_for_saved = lead.replace("-aVR", "aVR")
@@ -2411,7 +2427,7 @@ def generate_ecg_report(
                             else:
                                 raw_data = []
                     else:
-                        print(f"⚠️ Cannot calculate {lead}: I or II data missing in saved file")
+                        print(f" Cannot calculate {lead}: I or II data missing in saved file")
                         raw_data = []
                 else:
                     # For non-calculated leads, use saved data directly
@@ -2427,7 +2443,7 @@ def generate_ecg_report(
                     # Check if saved data has enough samples for calculated time window
                     saved_data_samples = len(raw_data)
                     if saved_data_samples < num_samples_to_capture:
-                        print(f"⚠️ SAVED FILE {lead} has only {saved_data_samples} samples, need {num_samples_to_capture} for {calculated_time_window:.2f}s window")
+                        print(f" SAVED FILE {lead} has only {saved_data_samples} samples, need {num_samples_to_capture} for {calculated_time_window:.2f}s window")
                         print(f"   Will use ALL saved data ({saved_data_samples} samples) - may show fewer beats than calculated")
                         # Use all available saved data (don't filter)
                         raw_data_to_use = raw_data
@@ -2440,7 +2456,7 @@ def generate_ecg_report(
                         real_data_available = True
                         time_window_str = f"{calculated_time_window:.2f}s" if calculated_time_window else "auto"
                         actual_time_window = len(real_ecg_data) / computed_sampling_rate if computed_sampling_rate > 0 else 0
-                        print(f"✅ Using SAVED FILE {lead} data: {len(real_ecg_data)} points (requested: {time_window_str}, actual: {actual_time_window:.2f}s, std: {np.std(real_ecg_data):.2f})")
+                        print(f" Using SAVED FILE {lead} data: {len(real_ecg_data)} points (requested: {time_window_str}, actual: {actual_time_window:.2f}s, std: {np.std(real_ecg_data):.2f})")
             
             # Priority 2: Fallback to live dashboard data (if saved data not available OR has insufficient samples)
             # Check if live data has MORE samples than saved data
@@ -2648,14 +2664,14 @@ def generate_ecg_report(
                 # Add path to master drawing
                 master_drawing.add(ecg_path)
                 
-                print(f"✅ Drew {len(real_ecg_data)} ECG data points for Lead {lead}")
+                print(f" Drew {len(real_ecg_data)} ECG data points for Lead {lead}")
             else:
-                print(f"📋 No real data for Lead {lead} - showing grid only")
+                print(f" No real data for Lead {lead} - showing grid only")
             
             successful_graphs += 1
             
         except Exception as e:
-            print(f"❌ Error adding Lead {lead}: {e}")
+            print(f" Error adding Lead {lead}: {e}")
             import traceback
             traceback.print_exc()
     
@@ -2739,7 +2755,7 @@ def generate_ecg_report(
     qrs_amp_mv = data.get('qrs_amp', 0.0)
     t_amp_mv = data.get('t_amp', 0.0)
     
-    print(f"🔬 Report Generator - Received wave amplitudes from data:")
+    print(f" Report Generator - Received wave amplitudes from data:")
     print(f"   p_amp: {p_amp_mv}, qrs_amp: {qrs_amp_mv}, t_amp: {t_amp_mv}")
     print(f"   Available keys in data: {list(data.keys())}")
     
@@ -2797,9 +2813,9 @@ def generate_ecg_report(
             if p_amp_mv<=0: p_amp_mv = cp
             if qrs_amp_mv<=0: qrs_amp_mv = cqrs
             if t_amp_mv<=0: t_amp_mv = ct
-            print(f"🔁 Fallback computed amplitudes from Lead II: P={p_amp_mv:.4f}, QRS={qrs_amp_mv:.4f}, T={t_amp_mv:.4f}")
+            print(f" Fallback computed amplitudes from Lead II: P={p_amp_mv:.4f}, QRS={qrs_amp_mv:.4f}, T={t_amp_mv:.4f}")
         except Exception as e:
-            print(f"⚠️ Fallback amplitude computation failed: {e}")
+            print(f" Fallback amplitude computation failed: {e}")
 
     # Calculate P/QRS/T Axis in degrees (using Lead I and Lead aVF)
     # PRIORITY 1: Use standardized values from data dictionary (passed from dashboard)
@@ -2810,13 +2826,13 @@ def generate_ecg_report(
     if data is not None:
         if 'p_axis' in data and data['p_axis'] is not None:
             p_axis_deg = f"{int(round(data['p_axis']))}°"
-            print(f"🔬 Using P axis from data: {p_axis_deg}")
+            print(f" Using P axis from data: {p_axis_deg}")
         if 'QRS_axis' in data and data['QRS_axis'] is not None:
             qrs_axis_deg = str(data['QRS_axis']).replace('°', '') + '°' if '°' not in str(data['QRS_axis']) else str(data['QRS_axis'])
-            print(f"🔬 Using QRS axis from data: {qrs_axis_deg}")
+            print(f" Using QRS axis from data: {qrs_axis_deg}")
         if 't_axis' in data and data['t_axis'] is not None:
             t_axis_deg = f"{int(round(data['t_axis']))}°"
-            print(f"🔬 Using T axis from data: {t_axis_deg}")
+            print(f" Using T axis from data: {t_axis_deg}")
     
     # PRIORITY 2: Try to get axis values from ECG test page (standardized median beat method)
     if (p_axis_deg == "--" or qrs_axis_deg == "--" or t_axis_deg == "--") and ecg_test_page is not None:
@@ -2826,14 +2842,14 @@ def generate_ecg_report(
                 p_axis_calc = ecg_test_page.calculate_p_axis_from_median()
                 if p_axis_calc is not None and p_axis_calc != 0:
                     p_axis_deg = f"{int(round(p_axis_calc))}°"
-                    print(f"🔬 Using standardized P axis from ECG test page: {p_axis_deg}")
+                    print(f" Using standardized P axis from ECG test page: {p_axis_deg}")
             
             # Get QRS axis from standardized calculation
             if qrs_axis_deg == "--" and hasattr(ecg_test_page, 'calculate_qrs_axis_from_median'):
                 qrs_axis_calc = ecg_test_page.calculate_qrs_axis_from_median()
                 if qrs_axis_calc is not None and qrs_axis_calc != 0:
                     qrs_axis_deg = f"{int(round(qrs_axis_calc))}°"
-                    print(f"🔬 Using standardized QRS axis from ECG test page: {qrs_axis_deg}")
+                    print(f" Using standardized QRS axis from ECG test page: {qrs_axis_deg}")
             
             # Get T axis from standardized calculation
             if t_axis_deg == "--" and hasattr(ecg_test_page, 'calculate_t_axis_from_median'):
@@ -2842,7 +2858,7 @@ def generate_ecg_report(
                     t_axis_deg = f"{int(round(t_axis_calc))}°"
                     print(f"🔬 Using standardized T axis from ECG test page: {t_axis_deg}")
         except Exception as e:
-            print(f"⚠️ Error getting axis values from ECG test page: {e}")
+            print(f" Error getting axis values from ECG test page: {e}")
             import traceback
             traceback.print_exc()
     
@@ -2995,7 +3011,7 @@ def generate_ecg_report(
                                     p_axis_num_normalized = p_axis_num
                                 
                                 # Debug: Print HR and P axis for troubleshooting
-                                print(f"🔍 P axis validation: HR={estimated_hr:.1f} BPM, P_axis={p_axis_num}°, normalized={p_axis_num_normalized}°")
+                                print(f" P axis validation: HR={estimated_hr:.1f} BPM, P_axis={p_axis_num}°, normalized={p_axis_num_normalized}°")
                                 
                                 # Check if P axis is in normal range (0 to 75°)
                                 # P axis normal range: 0° to +75°
@@ -3105,13 +3121,13 @@ def generate_ecg_report(
                                     if best_p_axis:
                                         p_axis_deg = best_p_axis
                                         if best_p_axis != p_axis_result:
-                                            print(f"⚠️ P axis adjusted using fallback method: {p_axis_deg} (original: {p_axis_result}, HR: {estimated_hr:.0f} BPM)")
+                                            print(f" P axis adjusted using fallback method: {p_axis_deg} (original: {p_axis_result}, HR: {estimated_hr:.0f} BPM)")
                                         else:
-                                            print(f"⚠️ P axis value: {p_axis_deg} (may be less accurate at HR {estimated_hr:.0f} BPM)")
+                                            print(f" P axis value: {p_axis_deg} (may be less accurate at HR {estimated_hr:.0f} BPM)")
                                     else:
                                         # Last resort: use original value even if abnormal
                                         p_axis_deg = p_axis_result
-                                        print(f"⚠️ P axis value: {p_axis_deg} (calculated at HR {estimated_hr:.0f} BPM, may be less accurate)")
+                                        print(f" P axis value: {p_axis_deg} (calculated at HR {estimated_hr:.0f} BPM, may be less accurate)")
                         else:
                             # If less than 2 P peaks detected, try to calculate with available peaks
                             if len(p_peaks) >= 1:
@@ -3119,7 +3135,7 @@ def generate_ecg_report(
                                 p_axis_result_single = calculate_wave_axis(lead_I_filt, lead_aVF_filt, p_peaks, fs, 20, 60)
                                 if p_axis_result_single != "--":
                                     p_axis_deg = p_axis_result_single
-                                    print(f"⚠️ P axis calculated with limited peaks: {p_axis_deg} (HR: {estimated_hr:.0f} BPM, may be less accurate)")
+                                    print(f" P axis calculated with limited peaks: {p_axis_deg} (HR: {estimated_hr:.0f} BPM, may be less accurate)")
                             else:
                                 # Last resort: try to estimate from R-peaks timing
                                 # Use average PR interval assumption (150ms) to estimate P wave position
@@ -3134,7 +3150,7 @@ def generate_ecg_report(
                                         p_axis_result_est = calculate_wave_axis(lead_I_filt, lead_aVF_filt, estimated_p_peaks, fs, 20, 60)
                                         if p_axis_result_est != "--":
                                             p_axis_deg = p_axis_result_est
-                                            print(f"⚠️ P axis estimated from R-peaks timing: {p_axis_deg} (HR: {estimated_hr:.0f} BPM, estimated)")
+                                            print(f" P axis estimated from R-peaks timing: {p_axis_deg} (HR: {estimated_hr:.0f} BPM, estimated)")
                         
                         # Detect T peaks (100-300ms after R peaks)
                         t_peaks = []
@@ -3152,9 +3168,9 @@ def generate_ecg_report(
                             if t_axis_result != "--":
                                 t_axis_deg = t_axis_result
                         
-                        print(f"🔬 Calculated P/QRS/T Axis: P={p_axis_deg}, QRS={qrs_axis_deg}, T={t_axis_deg}")
+                        print(f" Calculated P/QRS/T Axis: P={p_axis_deg}, QRS={qrs_axis_deg}, T={t_axis_deg}")
         except Exception as e:
-            print(f"⚠️ Axis calculation failed: {e}")
+            print(f" Axis calculation failed: {e}")
             import traceback
             traceback.print_exc()
         
@@ -3196,16 +3212,16 @@ def generate_ecg_report(
                 rv5_calc, sv1_calc = ecg_test_page.calculate_rv5_sv1_from_median()
                 if rv5_calc is not None and rv5_calc > 0:
                     rv5_amp = float(rv5_calc)
-                    print(f"🔬 Using standardized RV5 from ECG test page: {rv5_amp:.3f} mV")
+                    print(f" Using standardized RV5 from ECG test page: {rv5_amp:.3f} mV")
                 if sv1_calc is not None and sv1_calc != 0.0:
                     sv1_amp = float(sv1_calc)
-                    print(f"🔬 Using standardized SV1 from ECG test page: {sv1_amp:.3f} mV")
+                    print(f" Using standardized SV1 from ECG test page: {sv1_amp:.3f} mV")
         except Exception as e:
-            print(f"⚠️ Error getting RV5/SV1 from ECG test page: {e}")
+            print(f" Error getting RV5/SV1 from ECG test page: {e}")
             import traceback
             traceback.print_exc()
     
-    print(f"🔬 Report Generator - Received RV5/SV1 from data:")
+    print(f" Report Generator - Received RV5/SV1 from data:")
     print(f"   rv5: {rv5_amp}, sv1: {sv1_amp}")
     
     # If missing/zero, compute from V5 and V1 of last 10 seconds (GE/Hospital Standard)
@@ -3295,9 +3311,9 @@ def generate_ecg_report(
                             vals.append(s_amp_mv)
                 if len(vals)>0 and sv1_amp==0.0:
                     sv1_amp = float(np.median(vals))  # Median beat approach, negative value
-            print(f"🔁 Fallback computed RV5/SV1: RV5={rv5_amp:.4f}, SV1={sv1_amp:.4f}")
+            print(f" Fallback computed RV5/SV1: RV5={rv5_amp:.4f}, SV1={sv1_amp:.4f}")
         except Exception as e:
-            print(f"⚠️ Fallback RV5/SV1 computation failed: {e}")
+            print(f" Fallback RV5/SV1 computation failed: {e}")
 
     # Unit conversion: GE/Hospital Standard - Values must be in mV
     # CRITICAL: calculate_wave_amplitudes() now returns values in mV (converted from ADC counts)
@@ -3401,7 +3417,7 @@ def generate_ecg_report(
     
     # DYNAMIC conclusions from dashboard in the box - ONLY REAL CONCLUSIONS (no empty/---)
     # Split filtered conclusions into rows (2 conclusions per row) - COMPACT SPACING
-    print(f"🎨 Drawing conclusions in graph from filtered list: {filtered_conclusions}")
+    print(f" Drawing conclusions in graph from filtered list: {filtered_conclusions}")
     
     # Calculate how many rows we need based on actual conclusions
     num_conclusions = len(filtered_conclusions)
@@ -3439,7 +3455,7 @@ def generate_ecg_report(
             
             conclusion_num += 1  # Increment for next conclusion
 
-    print(f"✅ Added Patient Info, Vital Parameters, {len(filtered_conclusions)} REAL Conclusions (no empty/---), and Doctor Name/Signature to ECG grid")
+    print(f" Added Patient Info, Vital Parameters, {len(filtered_conclusions)} REAL Conclusions (no empty/---), and Doctor Name/Signature to ECG grid")
     
     # STEP 5: Add SINGLE master drawing to story (NO containers)
     story.append(master_drawing)
@@ -3450,16 +3466,16 @@ def generate_ecg_report(
     # Final summary
     if is_demo_mode:
         print(f"\n{'='*60}")
-        print(f"📊 DEMO MODE REPORT SUMMARY:")
+        print(f" DEMO MODE REPORT SUMMARY:")
         print(f"   • Total leads processed: {successful_graphs}/12")
         print(f"   • Demo mode: {'ON' if is_demo_mode else 'OFF'}")
         if successful_graphs == 0:
-            print(f"   ⚠️ WARNING: No ECG graphs were added to the report!")
-            print(f"   💡 SOLUTION: Ensure demo is running for 5-10 seconds before generating report")
+            print(f"    WARNING: No ECG graphs were added to the report!")
+            print(f"    SOLUTION: Ensure demo is running for 5-10 seconds before generating report")
         elif successful_graphs < 12:
-            print(f"   ⚠️ WARNING: Only {successful_graphs} graphs added (expected 12)")
+            print(f"    WARNING: Only {successful_graphs} graphs added (expected 12)")
         else:
-            print(f"   ✅ SUCCESS: All 12 ECG graphs added successfully!")
+            print(f"    SUCCESS: All 12 ECG graphs added successfully!")
         print(f"{'='*60}\n")
 
     # Measurement info (NO background)
@@ -3588,9 +3604,9 @@ def generate_ecg_report(
         
         # STEP 2: Draw logo on all pages (existing code)
         # Prefer PNG (ReportLab-friendly); fallback to WebP if PNG missing
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        png_path = os.path.join(base_dir, "assets", "Deckmountimg.png")
-        webp_path = os.path.join(base_dir, "assets", "Deckmount.webp")
+        # Use resource_path helper for PyInstaller compatibility
+        png_path = _get_resource_path("assets/Deckmountimg.png")
+        webp_path = _get_resource_path("assets/Deckmount.webp")
         logo_path = png_path if os.path.exists(png_path) else webp_path
 
         if os.path.exists(logo_path):
@@ -3617,7 +3633,7 @@ def generate_ecg_report(
         canvas.saveState()
         canvas.setFont("Helvetica", 8)
         canvas.setFillColor(colors.black)  # Ensure text is black on pink background
-        footer_text = "Deckmount Electronic , Plot No. 260, Phase IV, Udyog Vihar, Sector 18, Gurugram, Haryana 122015"
+        footer_text = "Deckmount Electronics pvt. ltd., Plot No. 260, Phase IV, Udyog Vihar, Sector 18, Gurugram, Haryana 122015"
         # Center the footer text at bottom of page
         text_width = canvas.stringWidth(footer_text, "Helvetica", 8)
         x = (doc.width + doc.leftMargin + doc.rightMargin - text_width) / 2
@@ -3633,6 +3649,27 @@ def generate_ecg_report(
         os.makedirs(reports_dir, exist_ok=True)
         index_path = os.path.join(reports_dir, 'index.json')
         metrics_path = os.path.join(reports_dir, 'metrics.json')
+
+        # Get username from dashboard_instance or ecg_test_page
+        username = ""
+        try:
+            if dashboard_instance and hasattr(dashboard_instance, 'username'):
+                username = dashboard_instance.username or ""
+            elif ecg_test_page:
+                # Try to get username from ecg_test_page's dashboard reference
+                if hasattr(ecg_test_page, 'dashboard_instance') and ecg_test_page.dashboard_instance:
+                    username = getattr(ecg_test_page.dashboard_instance, 'username', '') or ""
+                # Try to traverse parent widgets to find dashboard
+                widget = ecg_test_page
+                for _ in range(10):  # prevent infinite loops
+                    if widget is None:
+                        break
+                    if hasattr(widget, 'username'):
+                        username = widget.username or ""
+                        break
+                    widget = widget.parent()
+        except Exception:
+            username = ""
 
         params_entry = {
             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -3655,7 +3692,8 @@ def generate_ecg_report(
                 "P_QRS_T_mm": [p_mm, qrs_mm, t_mm],
                 "RV5_SV1_mV": [round(rv5_mv, 3), round(sv1_mv, 3)],
                 "QTCF_ms": round(qtcf_val, 1) if 'qtcf_val' in locals() and qtcf_val else None,
-            }
+            },
+            "username": username  # Add username to track report ownership
         }
 
         existing_list = []
@@ -3675,7 +3713,7 @@ def generate_ecg_report(
         # Persist as a flat list for simplicity
         with open(index_path, 'w') as f:
             json.dump(existing_list, f, indent=2)
-        print(f"✓ Saved parameters to {index_path}")
+        print(f" Saved parameters to {index_path}")
 
         # Save ONLY the 11 metrics in a lightweight separate JSON file (append to list)
         metrics_entry = {
@@ -3708,9 +3746,9 @@ def generate_ecg_report(
 
         with open(metrics_path, 'w') as f:
             json.dump(metrics_list, f, indent=2)
-        print(f"✓ Saved 11 metrics to {metrics_path}")
+        print(f" Saved 11 metrics to {metrics_path}")
     except Exception as e:
-        print(f"⚠️ Could not save parameters JSON: {e}")
+        print(f" Could not save parameters JSON: {e}")
 
     # Build PDF
     doc.build(story, onFirstPage=_draw_logo_and_footer, onLaterPages=_draw_logo_and_footer)
@@ -3721,9 +3759,12 @@ def generate_ecg_report(
         try:
             from dashboard.history_window import append_history_entry
             entry_patient = patient if isinstance(patient, dict) else {}
-            append_history_entry(entry_patient, os.path.abspath(filename), report_type="ECG")
+            # Get username from dashboard_instance if not provided
+            if not username and dashboard_instance:
+                username = getattr(dashboard_instance, 'username', None)
+            append_history_entry(entry_patient, os.path.abspath(filename), report_type="ECG", username=username)
         except Exception as hist_err:
-            print(f"⚠️ Failed to append ECG history entry: {hist_err}")
+            print(f" Failed to append ECG history entry: {hist_err}")
     
     # Upload to cloud if configured
     try:
@@ -3733,7 +3774,7 @@ def generate_ecg_report(
         
         cloud_uploader = get_cloud_uploader()
         if cloud_uploader.is_configured():
-            print(f"☁️  Uploading report to cloud ({cloud_uploader.cloud_service})...")
+            print(f"  Uploading report to cloud ({cloud_uploader.cloud_service})...")
             
             # Prepare metadata
             upload_metadata = {
@@ -3748,18 +3789,18 @@ def generate_ecg_report(
             result = cloud_uploader.upload_report(filename, metadata=upload_metadata)
             
             if result.get('status') == 'success':
-                print(f"✓ Report uploaded successfully to {cloud_uploader.cloud_service}")
+                print(f" Report uploaded successfully to {cloud_uploader.cloud_service}")
                 if 'url' in result:
                     print(f"  URL: {result['url']}")
             else:
-                print(f"⚠️  Cloud upload failed: {result.get('message', 'Unknown error')}")
+                print(f"  Cloud upload failed: {result.get('message', 'Unknown error')}")
         else:
-            print("ℹ️  Cloud upload not configured (see cloud_config_template.txt)")
+            print("  Cloud upload not configured (see cloud_config_template.txt)")
             
     except ImportError:
-        print("ℹ️  Cloud uploader not available")
+        print("  Cloud uploader not available")
     except Exception as e:
-        print(f"⚠️  Cloud upload error: {e}")
+        print(f"  Cloud upload error: {e}")
 
 
 # REMOVE ENTIRE create_sample_ecg_images function (lines ~1222-1257)

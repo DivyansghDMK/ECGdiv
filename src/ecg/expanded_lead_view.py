@@ -20,10 +20,11 @@ from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from .arrhythmia_detector import ArrhythmiaDetector
 try:
-    from .ecg_filters import extract_respiration, estimate_baseline_drift
+    from .ecg_filters import extract_respiration, estimate_baseline_drift, apply_ac_filter
 except ImportError:
     extract_respiration = None
     estimate_baseline_drift = None
+    apply_ac_filter = None
 try:
     from .clinical_measurements import (
         build_median_beat, get_tp_baseline, measure_pr_from_median_beat,
@@ -82,7 +83,7 @@ class PQRSTAnalyzer:
             
             # Ensure sampling rate is valid
             if self.fs <= 0 or self.fs > 10000:
-                print(f"⚠️ Invalid sampling rate: {self.fs} Hz, using default 80 Hz")
+                print(f" Invalid sampling rate: {self.fs} Hz, using default 80 Hz")
                 self.fs = 80.0
             
             nyq = 0.5 * self.fs
@@ -92,7 +93,7 @@ class PQRSTAnalyzer:
             
             if low >= high:
                 # Invalid filter parameters, return unfiltered signal
-                print(f"⚠️ Invalid filter parameters: low={low}, high={high}, fs={self.fs}")
+                print(f" Invalid filter parameters: low={low}, high={high}, fs={self.fs}")
                 return signal
             
             b, a = butter(4, [low, high], btype='band')
@@ -105,7 +106,7 @@ class PQRSTAnalyzer:
             filtered = filtfilt(b, a, signal)
             return filtered
         except Exception as e:
-            print(f"⚠️ Error filtering signal: {e}, returning unfiltered signal")
+            print(f" Error filtering signal: {e}, returning unfiltered signal")
             return signal
     
     def _detect_r_peaks(self, signal):
@@ -373,7 +374,7 @@ class ExpandedLeadView(QDialog):
         # Display gain (no pre-scaling; gain applied once at display stage)
         self.display_gain = 1.0
 
-        self.amplification = 0.05  # Amplification factor (default 0.05x for smaller waves)
+        self.amplification = 0.20  # Amplification factor (default 0.20x for waves)
         self.min_amplification = 0.05  # Minimum 5% of original
         self.max_amplification = 10.0  # Maximum 10x amplification
 
@@ -420,7 +421,7 @@ class ExpandedLeadView(QDialog):
         if parent and hasattr(parent, 'demo_manager') and hasattr(parent, 'demo_toggle'):
             self.demo_mode_active = parent.demo_toggle.isChecked()
             self.demo_manager = parent.demo_manager
-            print(f"🎬 Expanded view: Demo mode is {'ON' if self.demo_mode_active else 'OFF'}")
+            print(f" Expanded view: Demo mode is {'ON' if self.demo_mode_active else 'OFF'}")
         
         # Live data update
         self.timer = QTimer()
@@ -865,7 +866,7 @@ class ExpandedLeadView(QDialog):
         if hasattr(self, 'amp_label'):
             self.amp_label.setText(f"{self.amplification:.2f}x")
         self.update_plot()
-        print(f"✅ Amplification increased to {self.amplification:.2f}x")
+        print(f" Amplification increased to {self.amplification:.2f}x")
 
     def decrease_amplification(self):
         """Decrease amplification by 20%"""
@@ -874,15 +875,15 @@ class ExpandedLeadView(QDialog):
         if hasattr(self, 'amp_label'):
             self.amp_label.setText(f"{self.amplification:.2f}x")
         self.update_plot()
-        print(f"✅ Amplification decreased to {self.amplification:.2f}x")
+        print(f" Amplification decreased to {self.amplification:.2f}x")
 
     def reset_amplification(self):
-        """Reset amplification to default (1.0x)"""
-        self.amplification = 1.0
+        """Reset amplification to default (0.20x)"""
+        self.amplification = 0.20
         if hasattr(self, 'amp_label'):
             self.amp_label.setText(f"{self.amplification:.2f}x")
         self.update_plot()
-        print("✅ Amplification reset to 1.00x")
+        print(" Amplification reset to 0.20x")
     
     def setup_ecg_plot(self):
         """Setup the ECG plot with proper styling"""
@@ -900,7 +901,7 @@ class ExpandedLeadView(QDialog):
                 num_samples = len(self.ecg_data)
                 time = np.linspace(0, time_window, num_samples)
             except Exception as e:
-                print(f"⚠️ Error getting demo time window in setup: {e}")
+                print(f" Error getting demo time window in setup: {e}")
                 time = np.arange(len(self.ecg_data)) / self.sampling_rate
         else:
             # Normal mode: calculate time window based on wave speed (same as 12-lead view)
@@ -920,7 +921,7 @@ class ExpandedLeadView(QDialog):
                     # Fallback: use sampling rate if settings not available
                     time = np.arange(len(self.ecg_data)) / self.sampling_rate
             except Exception as e:
-                print(f"⚠️ Error calculating time window in setup: {e}")
+                print(f" Error calculating time window in setup: {e}")
                 # Fallback: use sampling rate
                 time = np.arange(len(self.ecg_data)) / self.sampling_rate
         
@@ -946,7 +947,7 @@ class ExpandedLeadView(QDialog):
         except Exception as filter_error:
             # Fallback: simple mean if low-frequency extraction fails
             ecg_filtered = self.ecg_data - np.mean(self.ecg_data) if len(self.ecg_data) > 0 else self.ecg_data
-            print(f"⚠️ Expanded view init filter error: {filter_error}")
+            print(f" Expanded view init filter error: {filter_error}")
         
         # Plot at 1.0x to establish baseline
         scaled = ecg_filtered * self.display_gain * 1.0  # Use 1.0x for baseline
@@ -1337,7 +1338,7 @@ class ExpandedLeadView(QDialog):
             
             return respiration
         except Exception as e:
-            print(f"⚠️ Error extracting respiration: {e}")
+            print(f" Error extracting respiration: {e}")
             return None
     
     def update_plot(self):
@@ -1380,7 +1381,16 @@ class ExpandedLeadView(QDialog):
                     display_signal = self._remove_respiration_display(display_signal, fs=self.sampling_rate, window_sec=2.0)
                 # clinical view leaves display_signal untouched
             except Exception as filter_error:
-                print(f"⚠️ Expanded view display filter error: {filter_error}")
+                print(f" Expanded view display filter error: {filter_error}")
+
+            # Apply AC filter (50/60 Hz) from settings for display
+            try:
+                if 'apply_ac_filter' in globals() and apply_ac_filter is not None and hasattr(self._parent, 'settings_manager'):
+                    ac_opt = str(self._parent.settings_manager.get_setting('filter_ac', 'off')).strip()
+                    if ac_opt in ('50', '60'):
+                        display_signal = apply_ac_filter(display_signal, float(self.sampling_rate), ac_opt)
+            except Exception as _ac_err:
+                print(f" Expanded view AC filter error: {_ac_err}")
             
             # ---------------- DISPLAY SCALING (apply gain ONCE, last) ----------------
             wave_gain_mm = 10.0
@@ -1391,26 +1401,17 @@ class ExpandedLeadView(QDialog):
                 wave_gain_mm = 10.0
             gain = wave_gain_mm / 10.0  # 10mm/mV = 1.0x baseline
 
-            display_signal = display_signal * gain * self.amplification
+            raw_center = (np.median(display_signal) if len(display_signal) > 0 else 0.0)
+            centered = display_signal - raw_center
+            scaled = centered * (gain * self.amplification)
+            visual_gain = 1.5
+            adc_center = -2048 if str(self.lead_name).upper() == 'AVR' else 2048
+            display_adc = adc_center + scaled * visual_gain
             
             # Create time array matching the signal length
-            time = np.arange(len(display_signal), dtype=float) / self.sampling_rate + (start_idx / self.sampling_rate)
+            time = np.arange(len(display_adc), dtype=float) / self.sampling_rate + (start_idx / self.sampling_rate)
 
-            # 🏥 Y-axis: percentile target with EMA smoothing (calm, paper-like)
-            # Reduced multiplier for smaller wave display
-            if len(display_signal) > 0:
-                p99 = np.percentile(np.abs(display_signal), 99)
-            else:
-                p99 = 1.0
-            p99 = max(0.2, p99)
-            # Reduced from 1.3 to 1.0 for tighter Y-axis (smaller waves)
-            target_ylim = 1.0 * p99
-            if not hasattr(self, "_ylim_smooth") or self._ylim_smooth is None:
-                self._ylim_smooth = target_ylim
-            else:
-                alpha = 0.05  # slow, monitor-grade
-                self._ylim_smooth = (1 - alpha) * self._ylim_smooth + alpha * target_ylim
-            ylim_val = self._ylim_smooth
+            ylim_low, ylim_high = (-4096.0, 0.0) if str(self.lead_name).upper() == 'AVR' else (0.0, 4096.0)
 
             self.ax.clear()
 
@@ -1424,8 +1425,8 @@ class ExpandedLeadView(QDialog):
                 extent = [
                     self.heatmap_time_axis[0] - window_half,
                     self.heatmap_time_axis[-1] + window_half,
-                    -ylim_val,
-                    ylim_val,
+                    ylim_low,
+                    ylim_high,
                 ]
                 self.ax.imshow(
                     self.heatmap_overlay,
@@ -1436,22 +1437,22 @@ class ExpandedLeadView(QDialog):
                     zorder=0,
                 )
 
-            # Ensure time and display_signal arrays have matching lengths
-            if len(time) != len(display_signal):
-                min_len = min(len(time), len(display_signal))
+            # Ensure time and display_adc arrays have matching lengths
+            if len(time) != len(display_adc):
+                min_len = min(len(time), len(display_adc))
                 time = time[:min_len]
-                display_signal = display_signal[:min_len]
+                display_adc = display_adc[:min_len]
             
             # Only plot if we have valid data
             waveform_alpha = 1.0
             quality_text = None
-            if len(display_signal) > 0:
+            if len(display_adc) > 0:
                 # Remove NaN values for plotting (replace with interpolation or skip)
-                valid_mask = ~np.isnan(display_signal)
+                valid_mask = ~np.isnan(display_adc)
                 if np.any(valid_mask):
                     # Simple beat quality: peak-to-peak vs threshold
                     try:
-                        ptp = np.ptp(display_signal[valid_mask])
+                        ptp = np.ptp(display_adc[valid_mask])
                         if self.show_quality and ptp < 0.15:
                             waveform_alpha = 0.4
                             quality_text = "Quality: Noisy/Low"
@@ -1462,17 +1463,17 @@ class ExpandedLeadView(QDialog):
                     # Plot only valid points
                     if np.all(valid_mask):
                         # All data is valid - plot normally
-                        self.ax.plot(time, display_signal, color='#0984e3', linewidth=0.7, label='ECG Signal', zorder=1, alpha=waveform_alpha)
+                        self.ax.plot(time, display_adc, color='#0984e3', linewidth=0.7, label='ECG Signal', zorder=1, alpha=waveform_alpha)
                     else:
                         # Some NaN values - plot segments
                         time_valid = time[valid_mask]
-                        scaled_valid = display_signal[valid_mask]
+                        scaled_valid = display_adc[valid_mask]
                         if len(time_valid) > 1:
                             self.ax.plot(time_valid, scaled_valid, color='#0984e3', linewidth=0.7, label='ECG Signal', zorder=1, alpha=waveform_alpha)
                 else:
-                    print(f"⚠️ All data is NaN in expanded view for lead {self.lead_name}")
+                    print(f" All data is NaN in expanded view for lead {self.lead_name}")
             else:
-                print(f"⚠️ No data to plot in expanded view for lead {self.lead_name}: len={len(display_signal)}")
+                print(f" No data to plot in expanded view for lead {self.lead_name}: len={len(display_adc)}")
             
             # Overlay vertical markers at detected arrhythmia event times within the visible window
             if hasattr(self, "arrhythmia_events") and self.arrhythmia_events:
@@ -1523,9 +1524,9 @@ class ExpandedLeadView(QDialog):
             
             # Median beat overlay (display-only)
             try:
-                if self.show_median_overlay and len(display_signal) > 0:
+                if self.show_median_overlay and len(display_adc) > 0:
                     r_peaks_local = self.analyzer._detect_r_peaks(window_signal)
-                    t_median, median_beat = self._compute_median_beat(display_signal, r_peaks_local, self.sampling_rate)
+                    t_median, median_beat = self._compute_median_beat(display_adc, r_peaks_local, self.sampling_rate)
                     if t_median is not None and median_beat is not None and len(t_median) == len(median_beat):
                         # Align median beat to first valid R peak in window
                         if len(r_peaks_local) > 0:
@@ -1533,11 +1534,11 @@ class ExpandedLeadView(QDialog):
                             t0 = time[0] + r0 / self.sampling_rate
                             self.ax.plot(t0 + t_median, median_beat, color="#7f8c8d", linewidth=2.0, alpha=0.6, label="Median beat")
             except Exception as median_err:
-                print(f"⚠️ Median beat overlay error: {median_err}")
+                print(f" Median beat overlay error: {median_err}")
 
             # Isoelectric baseline (TP segment estimate, display units)
             try:
-                if len(display_signal) > 0:
+                if len(display_adc) > 0:
                     r_peaks_local = self.analyzer._detect_r_peaks(window_signal)
                     tp_samples = []
                     pre_tp = int(0.35 * self.sampling_rate)
@@ -1549,10 +1550,10 @@ class ExpandedLeadView(QDialog):
                             tp_samples.append(np.median(window_signal[start:end]))
                     if len(tp_samples) > 0:
                         tp_baseline = np.median(tp_samples)
-                        baseline_disp = tp_baseline * gain * self.amplification
+                        baseline_disp = adc_center
                         self.ax.axhline(baseline_disp, color="#95a5a6", linestyle="--", linewidth=1.0, alpha=0.7, label="Isoelectric (TP)")
             except Exception as tp_err:
-                print(f"⚠️ Baseline overlay error: {tp_err}")
+                print(f" Baseline overlay error: {tp_err}")
 
             # Measurement markers (optional)
             try:
@@ -1576,10 +1577,10 @@ class ExpandedLeadView(QDialog):
                         q_idx = q_peaks[0]
                         t_idx = t_peaks[-1]
                         if q_idx < len(time) and t_idx < len(time) and t_idx > q_idx:
-                            self.ax.hlines(y=ylim_val * 0.8, xmin=time[q_idx], xmax=time[t_idx], colors="#e74c3c", linestyles="-", linewidth=2.0)
-                            self.ax.text((time[q_idx]+time[t_idx])/2, ylim_val*0.82, "QT", color="#e74c3c", ha="center", va="bottom", fontsize=9)
+                            self.ax.hlines(y=ylim_high * 0.8, xmin=time[q_idx], xmax=time[t_idx], colors="#e74c3c", linestyles="-", linewidth=2.0)
+                            self.ax.text((time[q_idx]+time[t_idx])/2, ylim_high*0.82, "QT", color="#e74c3c", ha="center", va="bottom", fontsize=9)
             except Exception as marker_err:
-                print(f"⚠️ Marker overlay error: {marker_err}")
+                print(f" Marker overlay error: {marker_err}")
 
             # 🫁 RESPIRATION: Plot with separate Y-axis (if respiration data exists)
             # Respiration uses percentile-based dynamic Y-limits (not fixed like ECG)
@@ -1636,17 +1637,17 @@ class ExpandedLeadView(QDialog):
                         # Sync X-axis with ECG
                         self.respiration_ax.set_xlim(time[0], time[-1])
                 except Exception as resp_error:
-                    print(f"⚠️ Error plotting respiration: {resp_error}")
+                    print(f" Error plotting respiration: {resp_error}")
             elif self.respiration_ax is not None:
                 # Clear respiration axis if no data
                 self.respiration_ax.clear()
                 self.respiration_ax = None
 
             # Apply smoothed Y-limits after all overlays
-            self.ax.set_ylim(-ylim_val, ylim_val)
+            self.ax.set_ylim(ylim_low, ylim_high)
             if quality_text:
                 try:
-                    self.ax.text(time[0] if len(time) > 0 else 0, ylim_val * 0.9, quality_text, color="#7f8c8d", fontsize=9, va="top")
+                    self.ax.text(time[0] if len(time) > 0 else 0, ylim_high * 0.9, quality_text, color="#7f8c8d", fontsize=9, va="top")
                 except Exception:
                     pass
 
@@ -1690,7 +1691,7 @@ class ExpandedLeadView(QDialog):
                 if self.history_slider_frame:
                     self.history_slider_frame.setVisible(False)
                     
-                print("✅ Acquisition started successfully from expanded view")
+                print(" Acquisition started successfully from expanded view")
             else:
                 QMessageBox.warning(self, "Error", 
                     "Cannot start acquisition. Parent ECG page not found.")
@@ -1705,7 +1706,7 @@ class ExpandedLeadView(QDialog):
         try:
             parent = self.parent()
             if parent and hasattr(parent, 'stop_acquisition'):
-                print("⏹️ Stopping acquisition from expanded lead view...")
+                print(" Stopping acquisition from expanded lead view...")
                 parent.stop_acquisition()
                 self.stop_live_mode()
                 self.history_slider_active = True
@@ -1718,13 +1719,13 @@ class ExpandedLeadView(QDialog):
                 self.expanded_start_btn.setEnabled(True)
                 self.expanded_stop_btn.setEnabled(False)
                 
-                print("✅ Acquisition stopped successfully from expanded view")
+                print(" Acquisition stopped successfully from expanded view")
             else:
                 QMessageBox.warning(self, "Error", 
                     "Cannot stop acquisition. Parent ECG page not found.")
-                print("❌ Parent ECG test page not available")
+                print(" Parent ECG test page not available")
         except Exception as e:
-            print(f"❌ Error stopping acquisition from expanded view: {e}")
+            print(f" Error stopping acquisition from expanded view: {e}")
             QMessageBox.warning(self, "Error", 
                 f"Failed to stop acquisition: {str(e)}")
     
@@ -1826,19 +1827,19 @@ class ExpandedLeadView(QDialog):
                         # Only check for asystole if we've received at least 50 packets
                         if data_count >= min_serial_data_packets:
                             has_received_serial_data = True
-                            print(f"✅ Serial data flowing: {data_count} packets received - asystole detection enabled")
+                            print(f" Serial data flowing: {data_count} packets received - asystole detection enabled")
                         else:
-                            print(f"⏳ Waiting for serial data: {data_count}/{min_serial_data_packets} packets - asystole detection disabled")
+                            print(f" Waiting for serial data: {data_count}/{min_serial_data_packets} packets - asystole detection disabled")
             
             # Detect arrhythmias using raw ECG data
-            print(f"🔍 Analyzing arrhythmias for {self.lead_name}: {len(self.ecg_data)} samples, {len(analysis.get('r_peaks', []))} R-peaks detected")
+            print(f" Analyzing arrhythmias for {self.lead_name}: {len(self.ecg_data)} samples, {len(analysis.get('r_peaks', []))} R-peaks detected")
             arrhythmias = self.arrhythmia_detector.detect_arrhythmias(
                 self.ecg_data, 
                 analysis,
                 has_received_serial_data=has_received_serial_data,
                 min_serial_data_packets=min_serial_data_packets
             )
-            print(f"📊 Arrhythmia detection result for {self.lead_name}: {arrhythmias}")
+            print(f" Arrhythmia detection result for {self.lead_name}: {arrhythmias}")
             self.update_arrhythmia_display(arrhythmias)
             
             # Generate heat map data (optional - don't break if method doesn't exist)
@@ -1860,7 +1861,7 @@ class ExpandedLeadView(QDialog):
                     self.heatmap_time_axis = None
             except Exception as heatmap_error:
                 # Heatmap is optional - don't break arrhythmia display
-                print(f"⚠️ Heatmap generation error (non-critical): {heatmap_error}")
+                print(f" Heatmap generation error (non-critical): {heatmap_error}")
                 self.heatmap_overlay = None
                 self.heatmap_time_axis = None
             
@@ -1975,7 +1976,7 @@ class ExpandedLeadView(QDialog):
                         prev_r_idx = r_peaks[len(r_peaks) // 2 - 1] if len(r_peaks) > 1 else None
                         tp_baseline = get_tp_baseline(self.ecg_data, r_mid, self.sampling_rate, prev_r_peak_idx=prev_r_idx)
                 except Exception as e:
-                    print(f"⚠️ Error building median beat in expanded view: {e}")
+                    print(f" Error building median beat in expanded view: {e}")
                     median_beat = None
             
             # PR Interval calculation
@@ -1992,7 +1993,7 @@ class ExpandedLeadView(QDialog):
                             if pr_intervals:
                                 self.update_metric('pr_interval', int(np.mean(pr_intervals)))
                 except Exception as e:
-                    print(f"⚠️ Error calculating PR from median beat in expanded view: {e}")
+                    print(f" Error calculating PR from median beat in expanded view: {e}")
                     # Fallback to simple method
                     if len(p_peaks) > 0 and len(q_peaks) > 0:
                         pr_intervals = [(q - p) / self.sampling_rate * 1000 for p, q in zip(p_peaks, q_peaks) if q > p]
@@ -2019,7 +2020,7 @@ class ExpandedLeadView(QDialog):
                             if qrs_durations:
                                 self.update_metric('qrs_duration', int(np.mean(qrs_durations)))
                 except Exception as e:
-                    print(f"⚠️ Error calculating QRS from median beat in expanded view: {e}")
+                    print(f" Error calculating QRS from median beat in expanded view: {e}")
                     # Fallback to simple method
                     if len(q_peaks) > 0 and len(s_peaks) > 0:
                         qrs_durations = [(s - q) / self.sampling_rate * 1000 for q, s in zip(q_peaks, s_peaks) if s > q]
@@ -2216,7 +2217,7 @@ class ExpandedLeadView(QDialog):
         slider_max = int(max_offset * 1000)
         current_val = int(min(self.view_window_offset, max_offset) * 1000)
         
-        print(f"🎚️ Updating history slider: max={slider_max}, current={current_val}, duration={total_duration:.1f}s")
+        print(f" Updating history slider: max={slider_max}, current={current_val}, duration={total_duration:.1f}s")
         
         self.history_slider.blockSignals(True)
         self.history_slider.setMaximum(slider_max)
@@ -2234,22 +2235,22 @@ class ExpandedLeadView(QDialog):
 
     def on_history_slider_changed(self, value):
         """Scroll through historical data - works anytime"""
-        print(f"🎚️ History slider changed to: {value}")
+        print(f" History slider changed to: {value}")
         self.manual_view = True
         self.history_slider_active = True  # Enable manual control
         self.view_window_offset = value / 1000.0
-        print(f"📊 View window offset set to: {self.view_window_offset:.2f}s")
+        print(f" View window offset set to: {self.view_window_offset:.2f}s")
         self.update_plot()
         if self.history_slider_label:
             total_duration = len(self.ecg_data) / max(1.0, self.sampling_rate)
             start_time = max(0.0, min(self.view_window_offset, total_duration))
             end_time = min(start_time + self.view_window_duration, total_duration)
             self.history_slider_label.setText(f"{start_time:0.1f}s – {end_time:0.1f}s")
-            print(f"✅ Showing window: {start_time:.1f}s - {end_time:.1f}s")
+            print(f" Showing window: {start_time:.1f}s - {end_time:.1f}s")
     
     def return_to_live_view(self):
         """Return to live view (most recent data)"""
-        print("🔴 Returning to LIVE view")
+        print(" Returning to LIVE view")
         self.manual_view = False
         self.history_slider_active = False
         if self.history_slider_label:

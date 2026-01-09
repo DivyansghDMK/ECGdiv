@@ -415,7 +415,7 @@ class HistoryWindow(QDialog):
                     shutil.copy2(src_path, dst_path)
                     copied_count += 1
                 except Exception as e:
-                    print(f"⚠️ Failed to copy {pdf_file}: {e}")
+                    print(f" Failed to copy {pdf_file}: {e}")
                     failed_count += 1
             
             # Also export history data as CSV
@@ -437,7 +437,7 @@ class HistoryWindow(QDialog):
                             row_data.append(value)
                         csv_file.write(",".join(row_data) + "\n")
             except Exception as e:
-                print(f"⚠️ Failed to export CSV: {e}")
+                print(f" Failed to export CSV: {e}")
             
             # Show success message
             message = f"Export completed!\n\n"
@@ -465,7 +465,7 @@ class HistoryWindow(QDialog):
 
 def append_history_entry(patient_details, report_file_path, report_type="ECG"):
     """Append a new history entry when a report is generated."""
-    print(f"📝 append_history_entry called with patient_details={patient_details}, report_file_path={report_file_path}")
+    print(f" append_history_entry called with patient_details={patient_details}, report_file_path={report_file_path}")
     
     # Load existing dedicated history file (rich entries)
     try:
@@ -474,9 +474,9 @@ def append_history_entry(patient_details, report_file_path, report_type="ECG"):
                 entries = json.load(f)
         else:
             entries = []
-            print(f"📝 Creating new history file: {HISTORY_FILE}")
+            print(f" Creating new history file: {HISTORY_FILE}")
     except Exception as e:
-        print(f"⚠️ Error loading history file: {e}")
+        print(f" Error loading history file: {e}")
         entries = []
 
     if not isinstance(entries, list):
@@ -494,12 +494,12 @@ def append_history_entry(patient_details, report_file_path, report_type="ECG"):
     }
     if isinstance(patient_details, dict):
         base.update(patient_details)
-        print(f"📝 Merged patient details into base entry")
+        print(f" Merged patient details into base entry")
     else:
-        print(f"⚠️ patient_details is not a dict: {type(patient_details)}")
+        print(f" patient_details is not a dict: {type(patient_details)}")
 
     entries.append(base)
-    print(f"📝 Added entry to history. Total entries: {len(entries)}")
+    print(f" Added entry to history. Total entries: {len(entries)}")
 
     # Save rich history file
     try:
@@ -509,11 +509,11 @@ def append_history_entry(patient_details, report_file_path, report_type="ECG"):
             os.makedirs(history_dir, exist_ok=True)
         with open(HISTORY_FILE, "w") as f:
             json.dump(entries, f, indent=2)
-        print(f"✅ Successfully saved history to {HISTORY_FILE}")
-        print(f"📝 Entry content: {json.dumps(base, indent=2)}")
+        print(f" Successfully saved history to {HISTORY_FILE}")
+        print(f" Entry content: {json.dumps(base, indent=2)}")
     except Exception as e:
         # History is non-critical; just print warning
-        print(f"⚠️ Failed to append ECG history entry: {e}")
+        print(f" Failed to append ECG history entry: {e}")
         import traceback
         traceback.print_exc()
 

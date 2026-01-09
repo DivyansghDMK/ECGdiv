@@ -125,7 +125,6 @@ pr_interval = 0.2  # TODO: Calculate from real P-R wave detection
 qrs_duration = 0.08  # TODO: Calculate from real QRS complex
 qt_interval = 0.4  # TODO: Calculate from real Q-T interval
 qtc_interval = 0.42  # TODO: Calculate corrected QT (Bazett's formula)
-qrs_axis = "--"  # TODO: Calculate from lead I and aVF
 st_segment = "--"  # TODO: Calculate ST elevation/depression
 ```
 

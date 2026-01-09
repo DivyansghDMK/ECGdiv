@@ -1,5 +1,5 @@
 # ECG Metrics Output
-# Format: PR_interval(ms), QRS_duration(ms), QTc_interval(ms), QRS_axis, ST_segment
+# Format: PR_interval(ms), QRS_duration(ms), QTc_interval(ms), ST_segment
 200.0, 80.0, 420.0, --, --
 P_peaks: [np.int64(100), np.int64(200), np.int64(300)]
 Q_peaks: [np.int64(150), np.int64(250), np.int64(350)]

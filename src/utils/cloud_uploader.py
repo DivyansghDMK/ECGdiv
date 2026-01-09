@@ -249,7 +249,7 @@ class CloudUploader:
                 allowed_keys = [
                     'patient_name', 'patient_age', 'report_date', 'machine_serial',
                     'heart_rate', 'pr_interval', 'qrs_duration', 'qtc_interval',
-                    'st_segment', 'qrs_axis'
+                    'st_segment'
                 ]
                 filtered_metadata = {k: v for k, v in metadata.items() if k in allowed_keys}
                 upload_metadata.update(filtered_metadata)

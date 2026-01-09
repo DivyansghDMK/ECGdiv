@@ -184,7 +184,7 @@ def apply_ac_filter(signal: np.ndarray, sampling_rate: float, ac_filter: str) ->
         
         # Ensure frequency is within valid range (0 < w0 < 1)
         if w0 <= 0 or w0 >= 1:
-            print(f"⚠️ AC filter frequency {notch_freq}Hz is invalid for sampling rate {sampling_rate}Hz")
+            print(f" AC filter frequency {notch_freq}Hz is invalid for sampling rate {sampling_rate}Hz")
             return signal
         
         # Design IIR notch filter
@@ -196,7 +196,7 @@ def apply_ac_filter(signal: np.ndarray, sampling_rate: float, ac_filter: str) ->
         return filtered_signal
     
     except Exception as e:
-        print(f"❌ Error applying AC filter ({ac_filter}Hz): {e}")
+        print(f" Error applying AC filter ({ac_filter}Hz): {e}")
         return signal
 
 
@@ -232,7 +232,7 @@ def apply_emg_filter(signal: np.ndarray, sampling_rate: float, emg_filter: str) 
         
         # Ensure cutoff is within valid range
         if normalized_cutoff <= 0 or normalized_cutoff >= 1:
-            print(f"⚠️ EMG filter cutoff {cutoff_freq}Hz is invalid for sampling rate {sampling_rate}Hz")
+            print(f" EMG filter cutoff {cutoff_freq}Hz is invalid for sampling rate {sampling_rate}Hz")
             return signal
         
         # Design 4th order low-pass Butterworth filter (zero-phase)
@@ -244,7 +244,7 @@ def apply_emg_filter(signal: np.ndarray, sampling_rate: float, emg_filter: str) 
         return filtered_signal
     
     except Exception as e:
-        print(f"❌ Error applying EMG filter ({emg_filter}Hz): {e}")
+        print(f" Error applying EMG filter ({emg_filter}Hz): {e}")
         return signal
 
 
@@ -274,7 +274,7 @@ def apply_dft_filter(signal: np.ndarray, sampling_rate: float, dft_filter: str) 
         
         # Ensure cutoff is within valid range
         if normalized_cutoff <= 0 or normalized_cutoff >= 1:
-            print(f"⚠️ DFT filter cutoff {cutoff_freq}Hz is invalid for sampling rate {sampling_rate}Hz")
+            print(f" DFT filter cutoff {cutoff_freq}Hz is invalid for sampling rate {sampling_rate}Hz")
             return signal
         
         # Design 2nd order high-pass Butterworth filter (gentle for baseline)
@@ -286,7 +286,7 @@ def apply_dft_filter(signal: np.ndarray, sampling_rate: float, dft_filter: str) 
         return filtered_signal
     
     except Exception as e:
-        print(f"❌ Error applying DFT filter ({dft_filter}Hz): {e}")
+        print(f" Error applying DFT filter ({dft_filter}Hz): {e}")
         return signal
 
 
@@ -440,7 +440,7 @@ def apply_baseline_wander_median_mean(signal: np.ndarray, sampling_rate: float =
         return clean_ecg
     
     except Exception as e:
-        print(f"⚠️ Error applying median+mean baseline filter: {e}")
+        print(f" Error applying median+mean baseline filter: {e}")
         # Fallback: simple mean subtraction
         return signal - np.mean(signal)
 
@@ -469,7 +469,7 @@ def notch_filter_butterworth(ecg: np.ndarray, fs: float, freq: float = 50.0, q: 
         b, a = butter(2, [w0 - w0/q, w0 + w0/q], btype='bandstop')
         return filtfilt(b, a, ecg)
     except Exception as e:
-        print(f"⚠️ Error applying notch filter: {e}")
+        print(f" Error applying notch filter: {e}")
         return ecg
 
 
@@ -515,7 +515,7 @@ def estimate_baseline_drift(ecg: np.ndarray, fs: float) -> np.ndarray:
         
         return drift
     except Exception as e:
-        print(f"⚠️ Error estimating baseline drift: {e}")
+        print(f" Error estimating baseline drift: {e}")
         return np.zeros_like(ecg)
 
 
@@ -559,7 +559,7 @@ def extract_respiration(drift_signal: np.ndarray, fs: float) -> np.ndarray:
         
         return resp
     except Exception as e:
-        print(f"⚠️ Error extracting respiration: {e}")
+        print(f" Error extracting respiration: {e}")
         return np.zeros_like(drift_signal)
 
 
@@ -619,7 +619,7 @@ def ecg_with_respiratory_baseline(ecg: np.ndarray, fs: float = 500) -> Tuple[np.
         return clean_ecg, respiration
     
     except Exception as e:
-        print(f"⚠️ Error in respiration-preserving baseline correction: {e}")
+        print(f" Error in respiration-preserving baseline correction: {e}")
         # Fallback: simple mean subtraction
         centered = ecg - np.mean(ecg)
         return centered, np.zeros_like(centered)
@@ -652,7 +652,7 @@ def respiration_rate(resp: np.ndarray, fs: float) -> float:
         else:
             return 0.0
     except Exception as e:
-        print(f"⚠️ Error calculating respiration rate: {e}")
+        print(f" Error calculating respiration rate: {e}")
         return 0.0
 
 

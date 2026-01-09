@@ -303,7 +303,7 @@ def measure_qt_from_median_beat(median_beat, time_axis, fs, tp_baseline):
         
         return None
     except Exception as e:
-        print(f"❌ Error measuring QT from median: {e}")
+        print(f" Error measuring QT from median: {e}")
         return None
 
 
@@ -360,7 +360,7 @@ def measure_rv5_sv1_from_median_beat(v5_raw, v1_raw, r_peaks_v5, r_peaks_v1, fs,
     r_max_adc = np.max(qrs_segment) - tp_baseline_v5
     
     # DEBUG: Log actual ADC values for calibration verification
-    print(f"🔬 RV5 Measurement: r_max_adc={r_max_adc:.2f}, tp_baseline_v5={tp_baseline_v5:.2f}, qrs_max={np.max(qrs_segment):.2f}, qrs_min={np.min(qrs_segment):.2f}")
+    print(f" RV5 Measurement: r_max_adc={r_max_adc:.2f}, tp_baseline_v5={tp_baseline_v5:.2f}, qrs_max={np.max(qrs_segment):.2f}, qrs_min={np.min(qrs_segment):.2f}")
     
     # CRITICAL FIX: Calibration factor adjustment based on actual vs expected ratio
     # Current: RV5=0.192 mV (expected: 0.969 mV) → ratio = 0.969/0.192 ≈ 5.05
@@ -369,7 +369,7 @@ def measure_rv5_sv1_from_median_beat(v5_raw, v1_raw, r_peaks_v5, r_peaks_v1, fs,
     # Adjusted: v5_adc_per_mv = 2048.0 / 5.05 ≈ 405.5 ADC/mV
     adjusted_v5_adc_per_mv = v5_adc_per_mv / 5.05  # Adjust based on actual vs expected ratio
     rv5_mv = r_max_adc / adjusted_v5_adc_per_mv if r_max_adc > 0 else None
-    print(f"🔬 RV5 Calibration: original={v5_adc_per_mv:.1f}, adjusted={adjusted_v5_adc_per_mv:.1f}, rv5_mv={rv5_mv:.3f} (expected: 0.969)")
+    print(f" RV5 Calibration: original={v5_adc_per_mv:.1f}, adjusted={adjusted_v5_adc_per_mv:.1f}, rv5_mv={rv5_mv:.3f} (expected: 0.969)")
     
     # Build median beat for V1 (requires ≥8 beats, GE/Philips standard)
     if len(r_peaks_v1) < 8:
@@ -407,7 +407,7 @@ def measure_rv5_sv1_from_median_beat(v5_raw, v1_raw, r_peaks_v5, r_peaks_v1, fs,
     sv1_adc = s_nadir_v1_adc - tp_baseline_v1
     
     # DEBUG: Log actual ADC values for calibration verification
-    print(f"🔬 SV1 Measurement: sv1_adc={sv1_adc:.2f}, tp_baseline_v1={tp_baseline_v1:.2f}, qrs_max={np.max(qrs_segment):.2f}, qrs_min={np.min(qrs_segment):.2f}")
+    print(f" SV1 Measurement: sv1_adc={sv1_adc:.2f}, tp_baseline_v1={tp_baseline_v1:.2f}, qrs_max={np.max(qrs_segment):.2f}, qrs_min={np.min(qrs_segment):.2f}")
     
     # CRITICAL FIX: Calibration factor adjustment based on actual vs expected ratio
     # Current: SV1=-0.030 mV (expected: -0.490 mV) → ratio = 0.490/0.030 ≈ 16.3
@@ -416,7 +416,7 @@ def measure_rv5_sv1_from_median_beat(v5_raw, v1_raw, r_peaks_v5, r_peaks_v1, fs,
     # Adjusted: v1_adc_per_mv = 1441.0 / 16.3 ≈ 88.4 ADC/mV
     adjusted_v1_adc_per_mv = v1_adc_per_mv / 16.3  # Adjust based on actual vs expected ratio
     sv1_mv = sv1_adc / adjusted_v1_adc_per_mv
-    print(f"🔬 SV1 Calibration: original={v1_adc_per_mv:.1f}, adjusted={adjusted_v1_adc_per_mv:.1f}, sv1_mv={sv1_mv:.3f} (expected: -0.490)")
+    print(f" SV1 Calibration: original={v1_adc_per_mv:.1f}, adjusted={adjusted_v1_adc_per_mv:.1f}, sv1_mv={sv1_mv:.3f} (expected: -0.490)")
     
     return rv5_mv, sv1_mv
 
@@ -683,12 +683,12 @@ def calculate_axis_from_median_beat(lead_i_raw, lead_ii_raw, lead_avf_raw, media
         # For now, use the provided calibration factors, but note that if they're wrong, axis will be wrong
         
         # DEBUG: Log actual ADC values for axis calculation
-        print(f"🔬 {wave_type} Axis Measurement: net_i_adc={net_i_adc:.2f}, net_avf_adc={net_avf_adc:.2f}, adc_i={adc_i:.1f}, adc_avf={adc_avf:.1f}")
+        print(f" {wave_type} Axis Measurement: net_i_adc={net_i_adc:.2f}, net_avf_adc={net_avf_adc:.2f}, adc_i={adc_i:.1f}, adc_avf={adc_avf:.1f}")
         
         net_i = net_i_adc / adc_i
         net_avf = net_avf_adc / adc_avf
         
-        print(f"🔬 {wave_type} Axis After Calibration: net_i={net_i:.6f}, net_avf={net_avf:.6f}")
+        print(f" {wave_type} Axis After Calibration: net_i={net_i:.6f}, net_avf={net_avf:.6f}")
         
         # STEP 5: Clinical Safety Gate (GE-like Rejection)
         # For P-wave: Check if amplitude is too low (indeterminate axis)
@@ -717,7 +717,7 @@ def calculate_axis_from_median_beat(lead_i_raw, lead_ii_raw, lead_avf_raw, media
         
         return round(axis_deg)
     except Exception as e:
-        print(f"❌ Error calculating {wave_type} axis: {e}")
+        print(f" Error calculating {wave_type} axis: {e}")
         return None
 
 
@@ -752,5 +752,5 @@ def calculate_qrs_t_angle(qrs_axis_deg, t_axis_deg):
         
         return round(angle_diff)
     except Exception as e:
-        print(f"❌ Error calculating QRS-T angle: {e}")
+        print(f" Error calculating QRS-T angle: {e}")
         return None

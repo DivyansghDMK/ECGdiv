@@ -104,12 +104,12 @@ The ECG module provides a comprehensive 12-lead electrocardiogram (ECG) analysis
 - **Real-time Plotting**: Continuous data visualization
 - **Zoom and Pan**: Interactive graph manipulation
 
-### 8. **Printer Integration**
-- **Printer Setup Panel**:
-  - Printer selection and configuration
-  - Print quality settings
-  - Paper size configuration
-  - Print preview functionality
+### 8. **Report Integration**
+- **Report Setup Panel**:
+  - Report configuration and settings
+  - Report quality settings
+  - Report format configuration
+  - Report preview functionality
 - **Print Options**:
   - Full 12-lead ECG printout
   - Individual lead printing

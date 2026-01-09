@@ -142,7 +142,7 @@ This section gives a single-page overview of how the main pieces of the app work
   - Host the right‑hand sliding **control panels**:
     - *Save ECG Details*
     - *Working Mode* (wave speed, wave gain, sampling mode)
-    - *System Setup*, *Printer Setup*, *Filter*, etc.
+    - *System Setup*, *Report Setup*, *Filter*, etc.
   - Manage the **Recent Reports** list using `reports/index.json`.
   - Provide buttons for **Start / Stop / Ports / Generate Report / 12:1 / 6:2 / Back**.
 - **Live metric update flow**:
@@ -196,9 +196,6 @@ This section gives a single-page overview of how the main pieces of the app work
     - QRS duration:
       - \( \mathrm{QRS\_ms} = (S - Q)/fs \times 1000 \)
       - Typically 80–120 ms.
-  - **QRS axis** (`calculate_qrs_axis`):
-    - Uses instantaneous values of Leads I and aVF:
-      - \( \text{axis} = \arctan2(\mathrm{aVF}, I) \times 180/\pi \).
   - **ST segment** (`calculate_st_interval`):
     - Filters Lead II, finds R, estimates J‑point at R+40 ms, measures ST at J+60 ms.
     - Expressed in a normalized unit (scaled by local standard deviation) and clamped to a reasonable range.

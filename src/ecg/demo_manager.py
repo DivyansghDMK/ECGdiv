@@ -55,9 +55,19 @@ class DemoManager:
         self._demo_paused_time = None  # Track paused time for resume
         # Smooth Y-range targets per lead so axes react gently to gain changes
         self._demo_lead_ranges = {}
+        # Delay initial plot display by 15 seconds to avoid jumping/stabilization period
+        self._initial_display_delay = 15.0  # Wait 15 seconds before first display
+        self._initial_display_start = None  # Set when demo starts
+        self._first_display_done = False  # Track if first display completed
         # Plot update coordination
         self._plot_running = False
         self._skipped_plot_calls = 0
+        # Performance optimization: throttle expensive operations
+        self._last_percentile_update = {}  # Track last percentile calculation per lead
+        self._last_dashboard_update = 0.0  # Track last dashboard callback
+        self._percentile_update_interval = 0.1  # Update percentile every 100ms (10x per second)
+        self._dashboard_update_interval = 0.2  # Update dashboard every 200ms (5x per second)
+        self._cached_baseline_envelope = {}  # Cache baseline envelope values per lead
         # Stop threads if the page is destroyed
         try:
             self.ecg_test_page.destroyed.connect(self._on_page_destroyed)
@@ -66,8 +76,39 @@ class DemoManager:
     
     def _get_calculation_functions(self):
        
-        from .twelve_lead_test import calculate_qrs_axis, calculate_st_segment
-        return calculate_qrs_axis, calculate_st_segment
+        from .twelve_lead_test import calculate_st_segment
+        return calculate_st_segment
+    
+    def _calculate_derived_leads(self, lead_I_value, lead_II_value):
+        """
+        Calculate derived leads (III, aVR, aVL, aVF) from Lead I and Lead II.
+        Uses the same formulas as twelve_lead_test.py (lines 1833-1859).
+        """
+        try:
+            # Lead III = Lead II - Lead I
+            III = lead_II_value - lead_I_value
+        except Exception:
+            III = 0.0
+        
+        try:
+            # aVR = -(Lead I + Lead II) / 2.0
+            aVR = -(lead_I_value + lead_II_value) / 2.0
+        except Exception:
+            aVR = 0.0
+        
+        try:
+            # aVL = (Lead I - Lead III) / 2
+            aVL = (lead_I_value - III) / 2.0
+        except Exception:
+            aVL = 0.0
+        
+        try:
+            # aVF = (Lead II + Lead III) / 2
+            aVF = (lead_II_value + III) / 2.0
+        except Exception:
+            aVF = 0.0
+        
+        return III, aVR, aVL, aVF
     
     def _update_wave_speed_settings(self):
         """
@@ -85,7 +126,7 @@ class DemoManager:
         baseline_time_window = 10.0
         self.time_window = baseline_time_window * (25.0 / float(self.current_wave_speed))
         
-        print(f"🌊 Wave speed updated: {self.current_wave_speed}mm/s (time window: {self.time_window:.1f}s)")
+        print(f" Wave speed updated: {self.current_wave_speed}mm/s (time window: {self.time_window:.1f}s)")
 
     
     
@@ -119,25 +160,28 @@ class DemoManager:
             current_speed = self.ecg_test_page.settings_manager.get_wave_speed()
             # current_gain removed from recent changes
 
-            print("🟢 Demo mode ON - Starting demo data...")
+            print(" Demo mode ON - Starting demo data...")
 
             # Force demo start to 50mm/s regardless of previous selection (demo-only behavior)
             try:
                 sm = self.ecg_test_page.settings_manager
                 # Preserve previous string value to restore later
                 self._previous_wave_speed = str(sm.get_setting("wave_speed", "25"))
-                if self._previous_wave_speed != "50":
-                    sm.set_setting("wave_speed", "50")
+                if self._previous_wave_speed != "25":
+                    sm.set_setting("wave_speed", "25")
                 # Ensure UI reacts immediately to the forced setting
-                self.ecg_test_page.on_settings_changed("wave_speed", "50")
+                self.ecg_test_page.on_settings_changed("wave_speed", "25")
             except Exception as e:
-                print(f"⚠️ Could not enforce demo wave speed: {e}")
+                print(f" Could not enforce demo wave speed: {e}")
             
             # Update wave speed settings before starting (like divyansh.py)
             self._update_wave_speed_settings()
             
             # Reset fixed metrics for new demo session
             self._demo_fixed_metrics = None
+            # Ensure fresh start - clear any paused time
+            self._demo_paused_time = None
+            self._demo_started_at = None
             self._running_demo = True
             self._demo_lead_ranges.clear()
             
@@ -151,12 +195,11 @@ class DemoManager:
                     self.ecg_test_page.metric_labels.get('heart_rate', QLabel()).setText("60")
                     self.ecg_test_page.metric_labels.get('pr_interval', QLabel()).setText("160")
                     self.ecg_test_page.metric_labels.get('qrs_duration', QLabel()).setText("85")
-                    self.ecg_test_page.metric_labels.get('qrs_axis', QLabel()).setText("0°")
-                    self.ecg_test_page.metric_labels.get('st_segment', QLabel()).setText("90")
+                    self.ecg_test_page.metric_labels.get('st_interval', QLabel()).setText("0")
                     # QTc label may be named 'qtc_interval' depending on UI
                     if 'qtc_interval' in self.ecg_test_page.metric_labels:
                         self.ecg_test_page.metric_labels['qtc_interval'].setText("380/400")
-                    print("✅ Demo metrics set on ECG test page")
+                    print(" Demo metrics set on ECG test page")
                 
                 # Update dashboard metrics (same values)
                 if hasattr(self.ecg_test_page, 'parent') and hasattr(self.ecg_test_page.parent, 'metric_labels'):
@@ -164,45 +207,50 @@ class DemoManager:
                     dashboard.metric_labels.get('heart_rate', QLabel()).setText("60 BPM")
                     dashboard.metric_labels.get('pr_interval', QLabel()).setText("160 ms")
                     dashboard.metric_labels.get('qrs_duration', QLabel()).setText("85 ms")
-                    dashboard.metric_labels.get('qrs_axis', QLabel()).setText("0°")
                     dashboard.metric_labels.get('st_interval', QLabel()).setText("90 ms")
                     if 'qtc_interval' in dashboard.metric_labels:
                         dashboard.metric_labels['qtc_interval'].setText("380/400 ms")
                     # Optional: reflect demo sampling rate if shown
                     dashboard.metric_labels.get('sampling_rate', QLabel()).setText("80 Hz")
-                    print("✅ Demo metrics set on dashboard")
+                    print(" Demo metrics set on dashboard")
             except Exception as e:
-                print(f"⚠️ Could not set demo metrics: {e}")
+                print(f" Could not set demo metrics: {e}")
             
             # Start demo data generation in the existing 12-lead grid
             self.start_demo_data()
             
             # Start elapsed timer for demo mode (sync with demo start time)
+            # ALWAYS reset start_time to current time for fresh start
             try:
                 if hasattr(self.ecg_test_page, 'elapsed_timer') and self.ecg_test_page.elapsed_timer:
-                    # Set start_time if not already set
-                    if not hasattr(self.ecg_test_page, 'start_time') or self.ecg_test_page.start_time is None:
-                        self.ecg_test_page.start_time = time.time()
-                        self.ecg_test_page.paused_duration = 0
+                    # Force reset start_time to current time for fresh start
+                    self.ecg_test_page.start_time = time.time()
+                    self.ecg_test_page.paused_duration = 0
                     # Start elapsed timer - ensure it's stopped first to avoid duplicates
                     if self.ecg_test_page.elapsed_timer.isActive():
                         self.ecg_test_page.elapsed_timer.stop()
                     self.ecg_test_page.elapsed_timer.start(1000)  # Update every 1 second
-                    print("⏱️ Elapsed timer started for demo mode")
+                    print(" Elapsed timer started for demo mode (fresh start)")
             except Exception as e:
-                print(f"⚠️ Could not start elapsed timer for demo: {e}")
+                print(f" Could not start elapsed timer for demo: {e}")
             
+            # Start the dashboard timer when demo begins (after start_demo_data sets _demo_started_at)
+            try:
+                if hasattr(self.ecg_test_page, 'parent') and hasattr(self.ecg_test_page.parent, 'start_acquisition_timer'):
+                    self.ecg_test_page.parent.start_acquisition_timer()
+            except Exception:
+                pass
             
         else:
             # Demo is being turned OFF - enable hardware controls
             self.ecg_test_page.demo_toggle.setText("Demo Mode: OFF")
-            print("🔴 Demo mode OFF - Stopping demo data...")
+            print(" Demo mode OFF - Stopping demo data...")
 
             try:
                 if hasattr(self.ecg_test_page, 'hide_demo_wave_gain'):
                     self.ecg_test_page.hide_demo_wave_gain()
             except Exception as hide_err:
-                print(f"⚠️ Could not hide demo wave gain display: {hide_err}")
+                print(f" Could not hide demo wave gain display: {hide_err}")
 
             # Restore user's previous wave speed selection after demo
             try:
@@ -211,38 +259,103 @@ class DemoManager:
                     sm.set_setting("wave_speed", self._previous_wave_speed)
                     self.ecg_test_page.on_settings_changed("wave_speed", self._previous_wave_speed)
             except Exception as e:
-                print(f"⚠️ Could not restore wave speed after demo: {e}")
+                print(f" Could not restore wave speed after demo: {e}")
             finally:
                 self._previous_wave_speed = None
             
-            # Save paused time for resume - sync with dashboard
-            if self._demo_started_at is not None:
-                self._demo_paused_time = int(time.time() - self._demo_started_at)
-                print(f"⏸️ Demo paused at {self._demo_paused_time} seconds")
-                
-                # Also update dashboard's paused time
-                try:
-                    if hasattr(self.ecg_test_page, 'parent') and hasattr(self.ecg_test_page.parent, 'session_start_time'):
-                        dashboard = self.ecg_test_page.parent
-                        if dashboard.session_start_time is not None:
-                            # Calculate elapsed time from dashboard's perspective
-                            paused_time = int(time.time() - dashboard.session_start_time)
-                            dashboard.session_paused_time = paused_time
-                            print(f"⏸️ Dashboard paused at {paused_time} seconds")
-                except Exception as e:
-                    print(f"⚠️ Could not update dashboard paused time: {e}")
-            
-            # Stop demo data generation
-            self.stop_demo_data()
-            
-            # Stop elapsed timer when demo stops
+            # Reset all metrics to zero when demo mode is turned OFF
             try:
+                # Reset ECG test page metrics to zero
+                if hasattr(self.ecg_test_page, 'metric_labels'):
+                    self.ecg_test_page.metric_labels.get('heart_rate', QLabel()).setText("0")
+                    self.ecg_test_page.metric_labels.get('pr_interval', QLabel()).setText("0")
+                    self.ecg_test_page.metric_labels.get('qrs_duration', QLabel()).setText("0")
+                    self.ecg_test_page.metric_labels.get('st_segment', QLabel()).setText("0")
+                    if 'qtc_interval' in self.ecg_test_page.metric_labels:
+                        self.ecg_test_page.metric_labels['qtc_interval'].setText("0/0")
+                    # Reset elapsed time to zero
+                    if 'time_elapsed' in self.ecg_test_page.metric_labels:
+                        self.ecg_test_page.metric_labels['time_elapsed'].setText("00:00")
+                    print(" ECG test page metrics reset to zero")
+                
+                # Keep dashboard interval values unchanged when demo mode is turned OFF
+                # Only reset time-related metrics, not interval values
+                if hasattr(self.ecg_test_page, 'parent') and hasattr(self.ecg_test_page.parent, 'metric_labels'):
+                    dashboard = self.ecg_test_page.parent
+                    # Reset only time-related metrics, keep interval values unchanged
+                    dashboard.metric_labels.get('heart_rate', QLabel()).setText("0 BPM")
+                    dashboard.metric_labels.get('sampling_rate', QLabel()).setText("0 Hz")
+                    # Reset elapsed time to zero
+                    if 'time_elapsed' in dashboard.metric_labels:
+                        dashboard.metric_labels['time_elapsed'].setText("00:00")
+                    # Note: PR interval, QRS duration, QRS axis, ST interval, QTc interval
+                    # are NOT reset - they remain at their current values
+                    print(" Dashboard time metrics reset, interval values preserved")
+            except Exception as e:
+                print(f" Could not reset metrics to zero: {e}")
+            
+            # Reset time tracking variables to zero
+            self._demo_started_at = None
+            self._demo_paused_time = None
+            
+            # Reset elapsed timer and time display
+            # IMPORTANT: Set start_time to None FIRST, then stop timer, then reset display
+            # This prevents timer callback from updating time after we reset it
+            try:
+                # First, set start_time to None so timer callback won't update time
+                if hasattr(self.ecg_test_page, 'start_time'):
+                    self.ecg_test_page.start_time = None
+                if hasattr(self.ecg_test_page, 'paused_duration'):
+                    self.ecg_test_page.paused_duration = 0
+                
+                # Now stop the timer
                 if hasattr(self.ecg_test_page, 'elapsed_timer') and self.ecg_test_page.elapsed_timer:
                     if self.ecg_test_page.elapsed_timer.isActive():
                         self.ecg_test_page.elapsed_timer.stop()
-                        print("⏸️ Elapsed timer stopped (demo mode OFF)")
+                    print(" Elapsed timer stopped (demo mode OFF)")
+                
+                # Force reset time display AFTER stopping timer
+                if hasattr(self.ecg_test_page, 'metric_labels') and 'time_elapsed' in self.ecg_test_page.metric_labels:
+                    self.ecg_test_page.metric_labels['time_elapsed'].setText("00:00")
+                    # Reset the last displayed elapsed time to prevent timer callback from updating
+                    if hasattr(self.ecg_test_page, '_last_displayed_elapsed'):
+                        self.ecg_test_page._last_displayed_elapsed = -1
+                    print(" Time display reset to 00:00")
+                
+                # Reset dashboard time tracking and stop its timer
+                try:
+                    if hasattr(self.ecg_test_page, 'parent') and hasattr(self.ecg_test_page.parent, 'session_start_time'):
+                        dashboard = self.ecg_test_page.parent
+                        
+                        # First, set session_start_time to None so timer callback won't update time
+                        dashboard.session_start_time = None
+                        dashboard.session_paused_time = None
+                        # Reset other session tracking variables if they exist
+                        if hasattr(dashboard, 'session_total_paused_time'):
+                            dashboard.session_total_paused_time = 0
+                        if hasattr(dashboard, 'session_last_elapsed'):
+                            dashboard.session_last_elapsed = 0
+                        
+                        # Stop dashboard timer if it exists
+                        if hasattr(dashboard, 'acquisition_timer') and dashboard.acquisition_timer:
+                            if dashboard.acquisition_timer.isActive():
+                                dashboard.acquisition_timer.stop()
+                        
+                        # Force reset dashboard time display AFTER stopping timer
+                        if hasattr(dashboard, 'metric_labels') and 'time_elapsed' in dashboard.metric_labels:
+                            dashboard.metric_labels['time_elapsed'].setText("00:00")
+                        
+                        print(" Dashboard time tracking reset and timer stopped")
+                except Exception as e:
+                    print(f" Could not reset dashboard time tracking: {e}")
             except Exception as e:
-                print(f"⚠️ Could not stop elapsed timer: {e}")
+                print(f" Could not reset time tracking: {e}")
+            
+            # Reset fixed metrics for fresh start next time
+            self._demo_fixed_metrics = None
+            
+            # Stop demo data generation
+            self.stop_demo_data()
             
             self._enable_hardware_controls()
             self._demo_lead_ranges.clear()
@@ -295,9 +408,9 @@ class DemoManager:
                         background: #5a6268;
                     }
                 """)
-            print("🔒 Hardware controls disabled (Demo mode ON)")
+            print(" Hardware controls disabled (Demo mode ON)")
         except Exception as e:
-            print(f"❌ Error disabling hardware controls: {e}")
+            print(f" Error disabling hardware controls: {e}")
     
     def _enable_hardware_controls(self):
         """Enable hardware control buttons when demo mode is OFF"""
@@ -347,9 +460,9 @@ class DemoManager:
                         background: #218838;
                     }
                 """)
-            print("🔓 Hardware controls enabled (Demo mode OFF)")
+            print(" Hardware controls enabled (Demo mode OFF)")
         except Exception as e:
-            print(f"❌ Error enabling hardware controls: {e}")
+            print(f" Error enabling hardware controls: {e}")
     
     def start_demo_data(self):
         """Start reading real ECG data from dummycsv.csv file with wave speed control"""
@@ -415,7 +528,7 @@ class DemoManager:
         try:
             # Read the CSV file
             df = pd.read_csv(csv_path, sep='\t')  # Use tab separator
-            print(f"✅ Successfully loaded {len(df)} rows from dummycsv.csv")
+            print(f" Successfully loaded {len(df)} rows from dummycsv.csv")
             
             # Get all lead columns (excluding 'Sample' column)
             lead_columns = [col for col in df.columns if col != 'Sample']
@@ -425,83 +538,170 @@ class DemoManager:
             for i in range(len(self.ecg_test_page.data)):
                 self.ecg_test_page.data[i] = np.zeros(self.ecg_test_page.buffer_size)
             
-            # Initialize data with first few rows
-            # Prefill enough samples to immediately show ~4 peaks
+            # Initialize data with enough rows to fill entire buffer for instant display
+            # Prefill ENTIRE buffer to show complete graph immediately (not just 4 seconds)
             csv_base_fs = 80  # demo CSV base aligned to new default
-            prefill_needed = min(self.ecg_test_page.buffer_size, max(100, int(csv_base_fs * 4.0)), len(df))
+            # Prefill full buffer_size OR 20 seconds worth, whichever is smaller
+            # This ensures graph appears immediately with proper data
+            buffer_size = self.ecg_test_page.buffer_size
+            seconds_to_prefill = 20.0  # Prefill 20 seconds for instant display
+            samples_needed = int(csv_base_fs * seconds_to_prefill)
+            prefill_needed = min(buffer_size, samples_needed, len(df))
+            
+            print(f" Prefilling {prefill_needed} samples ({prefill_needed/csv_base_fs:.1f}s) for instant graph display")
+            
+            # First, read raw leads from CSV (I, II, V1-V6)
+            raw_lead_data = {}
             for lead in lead_columns:
                 if lead in self.ecg_test_page.leads:
                     lead_index = self.ecg_test_page.leads.index(lead)
-                    # Add initial prefill samples to start
+                    # Add initial prefill samples to fill entire buffer
                     initial_samples = prefill_needed
                     series = df[lead].iloc[:initial_samples]
-                    count = min(len(series), self.ecg_test_page.buffer_size)
+                    count = min(len(series), buffer_size)
                     arr = np.array(series[:count], dtype=float)
                     # Record per‑lead baseline from the first 200 samples (or all available)
                     baseline_window = max(1, min(200, arr.size))
                     baseline_mean = float(np.mean(arr[:baseline_window])) if arr.size > 0 else 0.0
                     self._baseline_means[lead_index] = baseline_mean
-                    # Prefill with baseline‑centered data to reduce initial DC offset
-                    self.ecg_test_page.data[lead_index][:count] = arr - baseline_mean
+                    # Store raw data (will apply baseline centering later)
+                    raw_lead_data[lead] = arr
             
-            # Set warmup window to avoid initial visual artifacts
-            self._warmup_until = time.time() + 1.0
+            # Now calculate derived leads (III, aVR, aVL, aVF) from Lead I and Lead II
+            # Lead indices: I=0, II=1, III=2, aVR=3, aVL=4, aVF=5
+            if 'I' in raw_lead_data and 'II' in raw_lead_data:
+                lead_I_arr = raw_lead_data['I']
+                lead_II_arr = raw_lead_data['II']
+                count = min(len(lead_I_arr), len(lead_II_arr))
+                
+                # Calculate derived leads sample by sample
+                III_arr = np.zeros(count, dtype=float)
+                aVR_arr = np.zeros(count, dtype=float)
+                aVL_arr = np.zeros(count, dtype=float)
+                aVF_arr = np.zeros(count, dtype=float)
+                
+                for i in range(count):
+                    III_val, aVR_val, aVL_val, aVF_val = self._calculate_derived_leads(
+                        lead_I_arr[i], lead_II_arr[i]
+                    )
+                    III_arr[i] = III_val
+                    aVR_arr[i] = aVR_val
+                    aVL_arr[i] = aVL_val
+                    aVF_arr[i] = aVF_val
+                
+                # Store calculated derived leads
+                raw_lead_data['III'] = III_arr
+                raw_lead_data['aVR'] = aVR_arr
+                raw_lead_data['aVL'] = aVL_arr
+                raw_lead_data['aVF'] = aVF_arr
+                
+                print(" Calculated derived leads (III, aVR, aVL, aVF) from Lead I and Lead II")
             
-            # Resume from paused time or start fresh
-            if self._demo_paused_time is not None:
-                # Resume from paused time
-                # Adjust start time to account for the paused time
-                current_time = time.time()
-                self._demo_started_at = current_time - self._demo_paused_time
-                self._demo_paused_time = None  # Reset paused time
-                print(f"⏯️ Demo resumed from paused time")
-            else:
-                # Start fresh
-                self._demo_started_at = time.time()
-
-            # Make an immediate plot update once after prefill for stable first frame
-            try:
-                self.update_demo_plots()
-            except Exception as _e:
-                pass
+            # 🔧 FIX: Store RAW CSV values in buffer (no baseline centering during prefill)
+            # Baseline centering will be skipped during first 15 seconds in plotting function
+            # This ensures exact CSV values are plotted for first 15 seconds
+            for lead in raw_lead_data:
+                if lead in self.ecg_test_page.leads:
+                    lead_index = self.ecg_test_page.leads.index(lead)
+                    arr = raw_lead_data[lead]
+                    count = min(len(arr), buffer_size)
+                    # Store RAW values (no baseline centering) for exact CSV plotting
+                    raw_arr = arr[:count]
+                    
+                    # Fill the ENTIRE buffer by repeating the prefill data pattern
+                    # This ensures smooth display without gaps or flat lines
+                    if count > 0:
+                        # Tile the raw data to fill the entire buffer
+                        repeats_needed = (buffer_size // count) + 1
+                        tiled_data = np.tile(raw_arr, repeats_needed)
+                        # Fill buffer with properly tiled data (no gaps, no flat padding)
+                        self.ecg_test_page.data[lead_index][:buffer_size] = tiled_data[:buffer_size]
+                    else:
+                        # Fallback: zero-fill if no data
+                        self.ecg_test_page.data[lead_index][:] = 0.0
+                        
+            # Don't pre-calculate Y-ranges here - wait for 15 seconds of data collection
+            # Ranges will be calculated in _calculate_initial_stable_ranges() after stabilization
+            
+            # Set initial display delay - wait 15 seconds before showing plots to avoid jumping
+            self._initial_display_start = time.time() + self._initial_display_delay
+            self._warmup_until = self._initial_display_start  # Delay display until stable
+            self._first_display_done = False  # Reset first display flag for new demo session
+            
+            # Set data pointer to start of buffer
+            self.data_ptr = 0
+            
+            # ALWAYS start fresh - reset demo start time to current time
+            # (Demo mode should always start from zero, not resume from paused time)
+            self._demo_started_at = time.time()
+            self._demo_paused_time = None  # Ensure paused time is cleared
+            print(f" Demo starting - collecting data for {self._initial_display_delay} seconds before display (to avoid jumping)")
+            
+            # DO NOT update plots immediately - wait for stabilization period
+            # Data will be collected in background, but plots won't update until stable
 
             # Start reading data row by row from CSV with wave speed control
             def read_csv_data():
                 try:
-                    row_index = prefill_needed  # continue after prefill
+                    # Start from where prefill ended (loop if needed)
+                    row_index = prefill_needed % len(df) if prefill_needed >= len(df) else prefill_needed
                     consecutive_errors = 0
                     max_consecutive_errors = 10
                     
                     while (not self._stop_event.is_set()) and self._running_demo and row_index < len(df):
                         try:
-                            # Read data for all leads with error handling
+                            # Validate row index
+                            if row_index >= len(df) or row_index < 0:
+                                print(f" Invalid row index: {row_index}")
+                                row_index += 1
+                                continue
+                            
+                            # First, read raw leads from CSV (I, II, V1-V6)
+                            raw_lead_values = {}
                             for lead in lead_columns:
                                 try:
                                     if lead in self.ecg_test_page.leads:
-                                        lead_index = self.ecg_test_page.leads.index(lead)
-                                        
-                                        # Validate row index
-                                        if row_index >= len(df) or row_index < 0:
-                                            print(f"❌ Invalid row index: {row_index}")
-                                            continue
-                                        
                                         # Get value with validation
                                         value = df[lead].iloc[row_index]
                                         
                                         # Validate value
                                         if pd.isna(value) or np.isnan(value) or np.isinf(value):
-                                            print(f"❌ Invalid value for {lead} at row {row_index}: {value}")
                                             value = 0.0
                                         
                                         # Convert to float safely
                                         try:
                                             value = float(value)
                                         except (ValueError, TypeError):
-                                            print(f"❌ Cannot convert value to float: {value}")
                                             value = 0.0
                                         
-                                        # Update data using numpy roll method with bounds checking
-                                        with self._lock:
+                                        raw_lead_values[lead] = value
+                                except Exception as e:
+                                    print(f" Error reading lead {lead} at row {row_index}: {e}")
+                                    raw_lead_values[lead] = 0.0
+                            
+                            # Calculate derived leads (III, aVR, aVL, aVF) from Lead I and Lead II
+                            # Lead indices: I=0, II=1, III=2, aVR=3, aVL=4, aVF=5
+                            if 'I' in raw_lead_values and 'II' in raw_lead_values:
+                                lead_I_val = raw_lead_values['I']
+                                lead_II_val = raw_lead_values['II']
+                                
+                                III_val, aVR_val, aVL_val, aVF_val = self._calculate_derived_leads(
+                                    lead_I_val, lead_II_val
+                                )
+                                
+                                # Store calculated derived leads
+                                raw_lead_values['III'] = III_val
+                                raw_lead_values['aVR'] = aVR_val
+                                raw_lead_values['aVL'] = aVL_val
+                                raw_lead_values['aVF'] = aVF_val
+                            
+                            # Now update all leads (raw + derived) in data buffers
+                            with self._lock:
+                                for lead, value in raw_lead_values.items():
+                                    try:
+                                        if lead in self.ecg_test_page.leads:
+                                            lead_index = self.ecg_test_page.leads.index(lead)
+                                            
                                             if (hasattr(self.ecg_test_page, 'data') and 
                                                 lead_index < len(self.ecg_test_page.data) and
                                                 len(self.ecg_test_page.data[lead_index]) > 0):
@@ -511,12 +711,9 @@ class DemoManager:
                                                 self.ecg_test_page.data[lead_index] = np.roll(
                                                     self.ecg_test_page.data[lead_index], -1)
                                                 self.ecg_test_page.data[lead_index][-1] = raw_value
-                                            else:
-                                                print(f"❌ Invalid data buffer for lead {lead_index}")
-                                                
-                                except Exception as e:
-                                    print(f"❌ Error processing lead {lead} at row {row_index}: {e}")
-                                    continue
+                                    except Exception as e:
+                                        print(f" Error updating lead {lead} at row {row_index}: {e}")
+                                        continue
                             
                             row_index += 1
                             consecutive_errors = 0  # Reset error counter on success
@@ -524,7 +721,7 @@ class DemoManager:
                             # Loop back to beginning if we reach the end 
                             if row_index >= len(df):
                                 row_index = 0
-                                print("🔄 Restarting ECG data from beginning...")
+                                print(" Restarting ECG data from beginning...")
                             
                             # Dynamic delay based on wave speed with error handling
                             try:
@@ -534,15 +731,15 @@ class DemoManager:
                                 actual_delay = max(0.001, base_delay * speed_factor)
                                 time.sleep(actual_delay)
                             except Exception as e:
-                                print(f"❌ Error in sleep delay: {e}")
+                                print(f" Error in sleep delay: {e}")
                                 time.sleep(0.004)  # Fallback delay
                                 
                         except Exception as e:
                             consecutive_errors += 1
-                            print(f"❌ Error in CSV data reading (attempt {consecutive_errors}): {e}")
+                            print(f" Error in CSV data reading (attempt {consecutive_errors}): {e}")
                             
                             if consecutive_errors >= max_consecutive_errors:
-                                print(f"❌ Too many consecutive errors ({consecutive_errors}), stopping demo")
+                                print(f" Too many consecutive errors ({consecutive_errors}), stopping demo")
                                 self._stop_event.set()
                                 break
                             
@@ -555,7 +752,7 @@ class DemoManager:
                             time.sleep(0.01)
                             
                 except Exception as e:
-                    print(f"❌ Critical error in read_csv_data: {e}")
+                    print(f" Critical error in read_csv_data: {e}")
                     self._stop_event.set()
             
             # Start CSV data reading in background thread
@@ -580,17 +777,17 @@ class DemoManager:
             # Using default timer type - works fine in EXE with proper interval
             self.demo_timer.start(timer_interval)
             
-            print(f"🚀 Demo mode started with wave speed: {self.current_wave_speed}mm/s")
+            print(f" Demo mode started with wave speed: {self.current_wave_speed}mm/s")
             
         except Exception as e:
-            print(f"❌ Error reading dummycsv.csv: {e}")
+            print(f" Error reading dummycsv.csv: {e}")
             QMessageBox.warning(self.ecg_test_page, "Error", f"Failed to load dummycsv.csv: {str(e)}")
             # Don't start demo if CSV reading fails
             self.ecg_test_page.demo_toggle.setChecked(False)
 
     def on_settings_changed(self, key, value):
         """Handle immediate settings changes for instant wave updates"""
-        print(f"🎛️🎛️🎛️ Demo Manager: on_settings_changed called with key={key}, value={value}")
+        print(f" Demo Manager: on_settings_changed called with key={key}, value={value}")
         if key in ["wave_speed", "wave_gain"]:
             self._debug(f"{key} changed to {value} (running={self._running_demo})")
             # Always update internal settings, even if demo is not running
@@ -601,7 +798,7 @@ class DemoManager:
                 try:
                     self.update_demo_plots()
                 except Exception as e:
-                    print(f"❌ Error in immediate demo update: {e}")
+                    print(f" Error in immediate demo update: {e}")
             else:
                 self._debug(f"{key} change deferred until demo starts")
     
@@ -619,6 +816,17 @@ class DemoManager:
             self._plot_running = False
 
     def _update_demo_plots_inner(self):
+        # Check if this is the first display after stabilization period
+        first_display = False
+        if hasattr(self, '_initial_display_start'):
+            current_time = time.time()
+            if current_time >= self._initial_display_start and not hasattr(self, '_first_display_done'):
+                first_display = True
+                self._first_display_done = True
+                # Calculate stable Y-ranges from collected data on first display
+                print(f" Starting display after {self._initial_display_delay}s stabilization - calculating stable Y-ranges...")
+                self._calculate_initial_stable_ranges()
+        
         self._debug(f"update_demo_plots start, speed={self.current_wave_speed}")
         
         # Always get fresh values from settings manager (like divyansh.py does)
@@ -638,9 +846,10 @@ class DemoManager:
         try:
             if hasattr(self.ecg_test_page, 'apply_display_settings'):
                 self.ecg_test_page.apply_display_settings()
-                print(f"🎛️ update_demo_plots: Applied display settings (gain={current_gain}mm/mV)")
+                if first_display:
+                    print(f" First display: Applied display settings (gain={current_gain}mm/mV)")
         except Exception as e:
-            print(f"⚠️ Could not apply display settings: {e}")
+            print(f" Could not apply display settings: {e}")
         
         # --- EXACT SAME LOGIC AS DIVYANSH.PY ---
         time_window = getattr(self, 'time_window', 10.0)  # Fallback to 10s if not set
@@ -657,17 +866,9 @@ class DemoManager:
             current_gain = 1.0
             self._debug("demo gain fallback to 1.0x")
         
-        # During warmup, ramp the gain to avoid overshoot and clipping
-        now_ts = time.time()
-        if now_ts < self._warmup_until:
-            warmup_left = max(0.0, self._warmup_until - now_ts)
-            warmup_total = max(1e-6, self._warmup_until - (self._demo_started_at or now_ts))
-            # Ramp from 0.8 to 1.0 linearly across warmup (minimal ramp for faster display)
-            progress = 1.0 - (warmup_left / warmup_total)
-            ramp = max(0.8, min(1.0, 0.8 + 0.2 * progress))
-            effective_gain = current_gain * ramp
-        else:
-            effective_gain = current_gain
+        # Skip warmup ramp - data is pre-filled, so use full gain immediately
+        # (Warmup was removed to enable instant graph display)
+        effective_gain = current_gain
         
         self._debug(f"effective gain={effective_gain:.3f}")
         peak_amplitude = None
@@ -676,84 +877,45 @@ class DemoManager:
         for i, lead in enumerate(self.ecg_test_page.leads):
             if i < len(self.ecg_test_page.data_lines) and i < len(self.ecg_test_page.data):
                 lead_data = self.ecg_test_page.data[i]
-                
                 total_len = len(lead_data)
                 if total_len == 0:
                     continue
-                
                 start = int(self.data_ptr % total_len)
                 idx = (start + np.arange(num_samples_to_show)) % total_len
                 data_slice = lead_data[idx]
                 if data_slice.size == 0:
                     continue
-        
-                # Baseline correction handled by low-frequency anchor in update_plots()
-                # No per-window centering needed here
+
+                # Always center data to y-axis for demo mode (centered for all leads)
                 centered_slice = np.array(data_slice, dtype=float)
-        
                 finite_mask = np.isfinite(centered_slice)
                 if not np.any(finite_mask):
                     continue
-        
-                stats_slice = centered_slice[finite_mask]
-                abs_stats = np.abs(stats_slice)
-                try:
-                    baseline_envelope = float(np.percentile(abs_stats, 97.5))
-                except Exception:
-                    baseline_envelope = float(np.max(abs_stats)) if abs_stats.size else 0.0
-                if not np.isfinite(baseline_envelope) or baseline_envelope <= 0.0:
-                    baseline_envelope = float(np.max(abs_stats)) if abs_stats.size else 1.0
-                baseline_envelope = max(1.0, baseline_envelope)
-        
-                display_data = centered_slice * effective_gain
+                # Always apply baseline centering to center waves to y-axis in demo mode
+                slice_mean = np.mean(centered_slice[finite_mask])
+                centered_slice = centered_slice - slice_mean
+
+                # --- DEMO MODE Y-AXIS FIX: Offset data to center at 2048 or -2048 ---
+                if lead == 'aVR':
+                    base_offset = -2048
+                    self.ecg_test_page.plot_widgets[i].setYRange(-4096, 0)
+                else:
+                    base_offset = 2048
+                    self.ecg_test_page.plot_widgets[i].setYRange(0, 4096)
+
+                # Apply gain only to the wave, not the axis
+                display_data = base_offset + (centered_slice * effective_gain)
                 display_data = np.nan_to_num(display_data, copy=False)
-        
-                lead_peak = None
-                try:
-                    finite_display = display_data[finite_mask]
-                    if finite_display.size:
-                        lead_peak = float(np.max(np.abs(finite_display)))
-                        if np.isfinite(lead_peak):
-                            if peak_amplitude is None:
-                                peak_amplitude = lead_peak
-                            else:
-                                peak_amplitude = max(peak_amplitude, lead_peak)
-                        else:
-                            lead_peak = None
-                except Exception:
-                    lead_peak = None
-                
+
                 n = num_samples_to_show
                 time_axis = np.arange(n, dtype=float) / float(self.samples_per_second)
                 self.ecg_test_page.data_lines[i].setData(time_axis, display_data)
-                
-                # Scale base span with gain to prevent cropping at higher gains
-                # Medical standard: Y-axis should accommodate gain-scaled amplitudes
-                base_span = max(200.0, baseline_envelope * 1.25) * effective_gain
-                if lead_peak is not None and lead_peak > base_span:
-                    overshoot = lead_peak - base_span
-                    base_span += overshoot * 0.35
-                    if lead_peak > base_span:
-                        base_span = lead_peak * 1.15  # 15% headroom to prevent cropping
-        
-                prev_span = self._demo_lead_ranges.get(i)
-                if prev_span is not None:
-                    smoothed_span = 0.65 * prev_span + 0.35 * base_span
-                else:
-                    smoothed_span = base_span
-                smoothed_span = max(150.0 * effective_gain, smoothed_span)  # Scale minimum with gain
-                self._demo_lead_ranges[i] = smoothed_span
-                self.ecg_test_page.plot_widgets[i].setYRange(-smoothed_span, smoothed_span)
-                
-                if self._debug_logging:
-                    self._debug_counter = (self._debug_counter + 1) % 600
-                if self._debug_logging and i < 3 and self._debug_counter == 0:
-                    lead_peak_dbg = lead_peak if lead_peak is not None else float(np.max(np.abs(display_data[finite_mask])))
-                    self._debug(f"lead {lead} gain={current_gain:.2f} span={smoothed_span:.1f} peak={lead_peak_dbg:.1f}")
-                
+
                 self.ecg_test_page.plot_widgets[i].setXRange(0, time_window)
         
-        step = 8
+        # Smaller step for smoother scrolling animation
+        # Calculate step based on samples per second and timer interval for smooth movement
+        step = 2  # Reduced from 8 to 2 for much smoother scrolling
         if len(self.ecg_test_page.data) > 0:
             any_len = len(self.ecg_test_page.data[0])
             if any_len > 0:
@@ -767,15 +929,90 @@ class DemoManager:
             try:
                 self.ecg_test_page.update_demo_wave_gain(effective_gain, gain_mm_per_mv, peak_amplitude)
             except Exception as gain_ui_err:
-                print(f"⚠️ Unable to update demo wave gain display: {gain_ui_err}")
+                print(f" Unable to update demo wave gain display: {gain_ui_err}")
         
         self._debug("update_demo_plots complete")
         
-        # Calculate intervals for dashboard in demo mode
+        # Calculate intervals for dashboard in demo mode (throttled to reduce CPU load)
         # Skip during warmup to avoid unstable early metrics
+        current_time = time.time()
         if hasattr(self.ecg_test_page, 'dashboard_callback') and self.ecg_test_page.dashboard_callback:
-            if time.time() >= self._warmup_until:
-                self._calculate_demo_intervals()
+            if (not hasattr(self, '_initial_display_start') or current_time >= self._initial_display_start):
+                # Throttle dashboard updates to every 200ms (5x per second instead of 20x)
+                if current_time - self._last_dashboard_update >= self._dashboard_update_interval:
+                    self._calculate_demo_intervals()
+                    self._last_dashboard_update = current_time
+    
+    def _calculate_initial_stable_ranges(self):
+        """Calculate stable Y-axis ranges from collected data after 15-second stabilization"""
+        try:
+            # Get current gain setting (same as will be used in display)
+            wave_gain = float(self.ecg_test_page.settings_manager.get_wave_gain())
+            current_gain = wave_gain / 10.0  # 10mm/mV = 1.0x
+        except Exception:
+            current_gain = 1.0
+        
+        # Calculate time window and samples to show (same as display logic)
+        time_window = getattr(self, 'time_window', 10.0)
+        num_samples_to_show = max(1, int(time_window * self.samples_per_second))
+        
+        for i, lead in enumerate(self.ecg_test_page.leads):
+            if i < len(self.ecg_test_page.data):
+                lead_data = self.ecg_test_page.data[i]
+                if len(lead_data) > 0:
+                    # Use current data pointer position for slice
+                    start = int(self.data_ptr % len(lead_data))
+                    total_len = len(lead_data)
+                    idx = (start + np.arange(min(num_samples_to_show, total_len))) % total_len
+                    data_slice = lead_data[idx]
+                    
+                    if data_slice.size > 0:
+                        # Apply SAME baseline centering as display
+                        finite_mask = np.isfinite(data_slice)
+                        if np.any(finite_mask):
+                            slice_mean = np.mean(data_slice[finite_mask])
+                            centered_slice = data_slice - slice_mean
+                            
+                            # Apply SAME gain as display
+                            display_slice = centered_slice[finite_mask] * current_gain
+                            
+                            if len(display_slice) > 0:
+                                # Calculate stable range from actual display data
+                                abs_display = np.abs(display_slice)
+                                try:
+                                    # Use 97.5th percentile + 25% margin (same as display logic)
+                                    baseline_envelope = float(np.percentile(abs_display, 97.5))
+                                    base_span = max(200.0, baseline_envelope * 1.25)
+                                    # Add extra margin for peaks (same as display logic)
+                                    max_peak = float(np.max(abs_display))
+                                    if max_peak > base_span:
+                                        overshoot = max_peak - base_span
+                                        base_span += overshoot * 0.35
+                                        if max_peak > base_span:
+                                            base_span = max_peak * 1.05
+                                    stable_span = max(200.0, base_span)
+                                except Exception:
+                                    # Fallback: use max * 1.2
+                                    stable_span = max(200.0, float(np.max(abs_display)) * 1.2)
+                                
+                                # Store stable range
+                                self._demo_lead_ranges[i] = stable_span
+                                
+                                # Apply range immediately
+                                try:
+                                    self.ecg_test_page.plot_widgets[i].setYRange(-stable_span, stable_span)
+                                except Exception:
+                                    pass
+                                continue
+                
+                # Fallback: default range if calculation failed
+                self._demo_lead_ranges[i] = 300.0
+                try:
+                    self.ecg_test_page.plot_widgets[i].setYRange(-300.0, 300.0)
+                except Exception:
+                    pass
+        
+        print(f" Stable Y-ranges calculated and applied for all leads after {self._initial_display_delay}s stabilization")
 
     def start_synthetic_demo(self):
         """Stream synthetic ECG-like waves when CSV is unavailable."""
@@ -857,7 +1094,7 @@ class DemoManager:
             current_time = time.time()
             self._demo_started_at = current_time - self._demo_paused_time
             self._demo_paused_time = None  # Reset paused time
-            print(f"⏯️ Demo (synthetic) resumed from paused time")
+            print(f" Demo (synthetic) resumed from paused time")
         else:
             # Start fresh
             self._demo_started_at = time.time()
@@ -874,7 +1111,7 @@ class DemoManager:
         # Effective sampling for synthetic: fs (like divyansh.py)
         self.samples_per_second = int(fs)
         self._set_demo_sampling_rate(self.samples_per_second)
-        print("🚀 Synthetic demo started (CSV missing)")
+        print(" Synthetic demo started (CSV missing)")
     
     def _calculate_demo_intervals(self):
         """Calculate ECG intervals for dashboard display in demo mode"""
@@ -898,7 +1135,7 @@ class DemoManager:
                     # Check for signal variation
                     signal_std = np.std(centered_data)
                     if signal_std < 1.0:  # Very low variation
-                        print(f"❌ Low signal variation detected (std: {signal_std:.2f})")
+                        print(f" Low signal variation detected (std: {signal_std:.2f})")
                         return
                     
                     # Demo-specific peak detection with adjusted parameters
@@ -919,7 +1156,7 @@ class DemoManager:
                             # If demo heart rate is too high, apply correction factor
                             correction_factor = 0.6  # Reduce by 40%
                             heart_rate = heart_rate * correction_factor
-                            print(f"💓 Demo heart rate corrected: {heart_rate:.1f} BPM")
+                            print(f" Demo heart rate corrected: {heart_rate:.1f} BPM")
                         
                         # Apply demo heart rate smoothing
                         if heart_rate and 30 <= heart_rate <= 200:
@@ -947,10 +1184,9 @@ class DemoManager:
                         qtc_value = int(round(qtc_interval)) if (qtc_interval is not None and qtc_interval >= 0) else 400
                         
                         # Get calculation functions at runtime to avoid circular import
-                        calculate_qrs_axis, calculate_st_segment = self._get_calculation_functions()
+                        calculate_st_segment = self._get_calculation_functions()
                         
-                        # Calculate QRS axis and ST segment using imported functions
-                        qrs_axis = calculate_qrs_axis(lead_I_data, lead_aVF_data, r_peaks)
+                        # Calculate ST segment using imported functions
                         st_segment = calculate_st_segment(lead2_data, r_peaks, fs=sampling_rate)
                         
                         # Prepare safe ST value (numeric or descriptive text)
@@ -983,7 +1219,6 @@ class DemoManager:
                                 'QT': fixed_qt,
                                 'QTc': fixed_qtc,
                                 'QTc_interval': f"{fixed_qt}/{fixed_qtc}",  # Display as QT/QTc format
-                                'QRS_axis': fixed_axis,
                                 'ST': fixed_st
                             }
 
@@ -1001,7 +1236,7 @@ class DemoManager:
                         try:
                             self.ecg_test_page.dashboard_callback(payload)
                         except Exception as cb_err:
-                            print(f"❌ Error updating dashboard from demo: {cb_err}")
+                            print(f" Error updating dashboard from demo: {cb_err}")
                         
                         # Fixed print statement to handle None values
                         pr_str = f"{self._demo_fixed_metrics['PR']} ms" if self._demo_fixed_metrics else "N/A"
@@ -1011,7 +1246,7 @@ class DemoManager:
                         self._debug(f"intervals: HR={hr_str}, PR={pr_str}, QRS={qrs_str}")
                         
         except Exception as e:
-            print(f"❌ Error calculating demo intervals: {e}")
+            print(f" Error calculating demo intervals: {e}")
     
     def _calculate_qs_peaks(self, centered_data, r_peaks, sampling_rate):
         """Calculate Q and S peaks"""
@@ -1106,7 +1341,7 @@ class DemoManager:
             if self.demo_timer:
                 self.demo_timer.stop()
                 self.demo_timer.deleteLater()
-                print("⏹️ Demo timer stopped")
+                print(" Demo timer stopped")
         except Exception:
             pass
         finally:
@@ -1119,13 +1354,13 @@ class DemoManager:
                     self.ecg_test_page.data[i] = np.zeros(self.ecg_test_page.buffer_size)
                 for line in self.ecg_test_page.data_lines:
                     line.setData(np.zeros(self.ecg_test_page.buffer_size))
-            print("🧹 Demo data cleared and plots reset")
+            print(" Demo data cleared and plots reset")
         except Exception:
             pass
 
         # Clear heart rate smoothing data
         self.demo_heart_rates.clear()
-        print("✅ Demo mode stopped successfully")
+        print(" Demo mode stopped successfully")
 
     def _on_page_destroyed(self):
         """Safely stop background activity when the owning page is destroyed."""

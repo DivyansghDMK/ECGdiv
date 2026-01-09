@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt, QTimer, QSize
 try:
     from PyQt5.QtMultimedia import QSound
 except ImportError:
-    print("⚠️ QSound not available - heartbeat sound will be disabled")
+    print(" QSound not available - heartbeat sound will be disabled")
     QSound = None
 import sys
 import platform
@@ -40,13 +40,13 @@ try:
         config = get_config()
         def get_background_config():
             return config.get('ui.background', {"background": "none", "gif": False})
-        print("✓ Dashboard configuration loaded successfully")
+        print(" Dashboard configuration loaded successfully")
     except ImportError as e:
-        print(f"⚠️ Dashboard config import warning: {e}")
+        print(f" Dashboard config import warning: {e}")
         def get_background_config():
             return {"background": "none", "gif": False}
 except ImportError:
-    print("⚠ Dashboard configuration not found, using default settings")
+    print(" Dashboard configuration not found, using default settings")
     def get_background_config():
         return {
             "use_gif_background": False,
@@ -166,9 +166,9 @@ class Dashboard(QWidget):
         try:
             from utils.auto_sync_service import start_auto_sync
             self.auto_sync_service = start_auto_sync(interval_seconds=5)
-            print("✅ Automatic cloud sync started (every 5 seconds)")
+            print(" Automatic cloud sync started (every 5 seconds)")
         except Exception as e:
-            print(f"⚠️  Could not start auto-sync service: {e}")
+            print(f" Could not start auto-sync service: {e}")
             self.auto_sync_service = None
         
         # Triple-click counter for heart rate metric
@@ -505,17 +505,17 @@ class Dashboard(QWidget):
                 heartbeat_sound_path = get_asset_path("heartbeat.wav")
                 if os.path.exists(heartbeat_sound_path):
                     self.heartbeat_sound = QSound(heartbeat_sound_path)
-                    print(f"✅ Heartbeat sound loaded: {heartbeat_sound_path}")
+                    print(f" Heartbeat sound loaded: {heartbeat_sound_path}")
                 else:
-                    print(f"⚠️ Heartbeat sound not found at: {heartbeat_sound_path}")
+                    print(f" Heartbeat sound not found at: {heartbeat_sound_path}")
                     # Create a synthetic heartbeat sound
                     self.create_heartbeat_sound()
             else:
-                print("⚠️ QSound not available - heartbeat sound disabled")
+                print(" QSound not available - heartbeat sound disabled")
                 self.heartbeat_sound = None
                 self.heartbeat_sound_enabled = False
         except Exception as e:
-            print(f"⚠️ Could not load heartbeat sound: {e}")
+            print(f" Could not load heartbeat sound: {e}")
             self.heartbeat_sound = None
             self.heartbeat_sound_enabled = False
         
@@ -597,7 +597,7 @@ class Dashboard(QWidget):
                 # Use actual count, or show 1 if zero to keep chart visible
                 month_data.append(max(1, count))
         except Exception as e:
-            print(f"⚠️ Could not calculate visitor stats: {e}")
+            print(f" Could not calculate visitor stats: {e}")
             month_data = [1, 1, 1, 1, 1, 1]  # Fallback to equal distribution
         
         pie_data = month_data
@@ -779,16 +779,22 @@ class Dashboard(QWidget):
             except Exception:
                 pass
 
+        # Apply calendar date restrictions for new users
+        self._apply_new_user_calendar_restrictions()
+        
         # connect date click/selection to filter reports
         self.schedule_calendar.clicked.connect(self.on_calendar_date_selected)
         self.schedule_calendar.selectionChanged.connect(self.on_calendar_selection_changed)
+        
+        # Connect to page change to track month navigation
+        self.schedule_calendar.currentPageChanged.connect(self.on_calendar_page_changed)
         
         # Disable double-click activation (prevents popup window)
         try:
             self.schedule_calendar.activated.disconnect()
         except:
             pass  # No activated signal connected
-        
+
        
         
         schedule_layout.addWidget(self.schedule_calendar)
@@ -908,7 +914,6 @@ class Dashboard(QWidget):
             ("HR", "00", "BPM", "heart_rate"),
             ("PR", "0", "ms", "pr_interval"),
             ("QRS Complex", "0", "ms", "qrs_duration"),
-            ("QRS Axis", "0°", "", "qrs_axis"),
             ("ST", "0.00", "mV", "st_interval"),
             ("QT/QTc", "0", "ms", "qtc_interval"),
         ]
@@ -968,14 +973,14 @@ class Dashboard(QWidget):
             src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             if src_dir not in sys.path:
                 sys.path.insert(0, src_dir)
-                print(f"✅ Added src directory to path: {src_dir}")
+                print(f" Added src directory to path: {src_dir}")
             
             from ecg.twelve_lead_test import ECGTestPage
-            print("✅ ECG Test Page imported successfully")
+            print(" ECG Test Page imported successfully")
                     
         except ImportError as e:
-            print(f"❌ ECG Test Page import error: {e}")
-            print("💡 Creating fallback ECG Test Page")
+            print(f" ECG Test Page import error: {e}")
+            print(" Creating fallback ECG Test Page")
             # Create a fallback ECG test page
             class ECGTestPage(QWidget):
                 def __init__(self, title, parent):
@@ -988,9 +993,12 @@ class Dashboard(QWidget):
                     label.setAlignment(Qt.AlignCenter)
                     layout.addWidget(label)
                     self.setLayout(layout)
-                    print("⚠️ Using fallback ECG Test Page")
+                    print(" Using fallback ECG Test Page")
         self.ecg_test_page = ECGTestPage("12 Lead ECG Test", self.page_stack)
         self.ecg_test_page.dashboard_callback = self.update_ecg_metrics
+        # Pass username and dashboard reference to ECGTestPage for report filtering
+        self.ecg_test_page.dashboard_instance = self
+        self.ecg_test_page.current_username = self.username
 
         if hasattr(self.ecg_test_page, 'update_metrics_frame_theme'):
             self.ecg_test_page.update_metrics_frame_theme(self.dark_mode, self.medical_mode)
@@ -1014,6 +1022,21 @@ class Dashboard(QWidget):
 
     def on_calendar_date_selected(self, qdate):
         try:
+            # Check if date is valid and within allowed range for new users
+            if hasattr(self, '_user_signup_date') and hasattr(self, '_user_max_date'):
+                if qdate < self._user_signup_date:
+                    # Date is before signup - reset to signup date
+                    self.schedule_calendar.setSelectedDate(self._user_signup_date)
+                    QMessageBox.warning(self, "Invalid Date", 
+                                      f"Please select a date on or after your signup date: {self._user_signup_date.toString('yyyy-MM-dd')}")
+                    return
+                elif qdate > self._user_max_date:
+                    # Date is after max date - reset to max date
+                    self.schedule_calendar.setSelectedDate(self._user_max_date)
+                    QMessageBox.warning(self, "Invalid Date", 
+                                      f"Please select a date on or before: {self._user_max_date.toString('yyyy-MM-dd')}")
+                    return
+            
             self.reports_filter_date = qdate.toString("yyyy-MM-dd")
             # Set flag to prevent automatic report opening when calendar is clicked
             self._calendar_triggered = True
@@ -1031,14 +1054,128 @@ class Dashboard(QWidget):
         except Exception:
             pass
     
-    def on_calendar_page_changed(self, year, month):
-        """Handle calendar page change - disabled dropdown functionality"""
+    def _apply_new_user_calendar_restrictions(self):
+        """Apply calendar date restrictions for new users based on signup date"""
         try:
-            # Disabled: No longer show month dropdown when calendar arrows are clicked
-            # self.show_month_dropdown(year, month)
-            pass
+            from PyQt5.QtCore import QDate
+            from PyQt5.QtGui import QTextCharFormat, QColor
+            from datetime import datetime, timedelta
+            
+            # Check if user has signup_date (new user)
+            signup_date_str = self.user_details.get('signup_date') or self.user_details.get('registered_at')
+            
+            # Also check if user logged in with phone number
+            has_phone = bool(self.user_details.get('phone') or self.user_details.get('contact'))
+            
+            if not signup_date_str or not has_phone:
+                # Not a new user or no phone number - no restrictions
+                return
+            
+            # Parse signup date
+            try:
+                # Try parsing different date formats
+                if 'T' in signup_date_str or ' ' in signup_date_str:
+                    # ISO format with time: "2024-01-15 10:30:00" or "2024-01-15T10:30:00"
+                    signup_date_str = signup_date_str.split('T')[0].split(' ')[0]
+                
+                signup_date_obj = datetime.strptime(signup_date_str, "%Y-%m-%d").date()
+                signup_qdate = QDate(signup_date_obj.year, signup_date_obj.month, signup_date_obj.day)
+            except Exception as e:
+                print(f"Error parsing signup date: {e}")
+                return
+            
+            # Calculate maximum date (1 year from signup)
+            max_date_obj = signup_date_obj + timedelta(days=365)
+            max_qdate = QDate(max_date_obj.year, max_date_obj.month, max_date_obj.day)
+            
+            # Set date range
+            self.schedule_calendar.setMinimumDate(signup_qdate)
+            self.schedule_calendar.setMaximumDate(max_qdate)
+            
+            # Fade dates before signup date (if any are still visible)
+            # Get current displayed month
+            current_date = self.schedule_calendar.selectedDate()
+            if not current_date.isValid():
+                current_date = QDate.currentDate()
+            
+            # Fade all dates before signup date
+            fade_format = QTextCharFormat()
+            fade_format.setForeground(QColor(200, 200, 200))  # Light gray
+            fade_format.setBackground(QColor(240, 240, 240))  # Light background
+            
+            # Iterate through dates in the visible month and fade past dates
+            year = current_date.year()
+            month = current_date.month()
+            days_in_month = QDate.daysInMonth(month, year)
+            
+            for day in range(1, days_in_month + 1):
+                check_date = QDate(year, month, day)
+                if check_date.isValid() and check_date < signup_qdate:
+                    self.schedule_calendar.setDateTextFormat(check_date, fade_format)
+            
+            # Store signup date and max date for later use
+            self._user_signup_date = signup_qdate
+            self._user_max_date = max_qdate
+            self._user_navigated_months = set()  # Track which months user has navigated to
+            
+            # Set initial selected date to signup date for new users
+            self.schedule_calendar.setSelectedDate(signup_qdate)
+            self.schedule_calendar.setCurrentPage(signup_qdate.year(), signup_qdate.month())
+            
+            print(f" Calendar restrictions applied for new user. Signup: {signup_date_str}, Max: {max_date_obj}")
+            
+        except Exception as e:
+            print(f"Error applying calendar restrictions: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def on_calendar_page_changed(self, year, month):
+        """Handle calendar page change - apply date locking after navigation"""
+        try:
+            # Check if this is a new user with restrictions
+            if not hasattr(self, '_user_signup_date'):
+                return
+            
+            from PyQt5.QtCore import QDate
+            from PyQt5.QtGui import QTextCharFormat, QColor
+            
+            # Track that user navigated to this month
+            month_key = (year, month)
+            self._user_navigated_months.add(month_key)
+            
+            # Lock dates after the current month (if user navigated forward)
+            current_date = QDate.currentDate()
+            displayed_date = QDate(year, month, 1)
+            
+            # If displayed month is in the future (after current month), lock dates after it
+            if displayed_date > current_date:
+                # Lock all dates in months after the displayed month
+                lock_format = QTextCharFormat()
+                lock_format.setForeground(QColor(150, 150, 150))  # Darker gray
+                lock_format.setBackground(QColor(220, 220, 220))  # Gray background
+                
+                # Lock dates in the displayed month that are after today
+                days_in_month = QDate.daysInMonth(month, year)
+                for day in range(1, days_in_month + 1):
+                    check_date = QDate(year, month, day)
+                    if check_date.isValid() and check_date > current_date:
+                        self.schedule_calendar.setDateTextFormat(check_date, lock_format)
+            
+            # Also ensure dates before signup are still faded
+            fade_format = QTextCharFormat()
+            fade_format.setForeground(QColor(200, 200, 200))
+            fade_format.setBackground(QColor(240, 240, 240))
+            
+            days_in_month = QDate.daysInMonth(month, year)
+            for day in range(1, days_in_month + 1):
+                check_date = QDate(year, month, day)
+                if check_date.isValid() and check_date < self._user_signup_date:
+                    self.schedule_calendar.setDateTextFormat(check_date, fade_format)
+            
         except Exception as e:
             print(f"Error in calendar page change: {e}")
+            import traceback
+            traceback.print_exc()
 
     def show_month_dropdown(self, year, month):
         """Show month selection dropdown"""
@@ -1149,6 +1286,13 @@ class Dashboard(QWidget):
         # ECG Report entries have 'filename' and 'title' keys
         # Detailed metadata entries have 'timestamp' and 'metrics' keys
         entries = [e for e in entries if 'filename' in e and 'title' in e]
+        
+        # Filter reports by current user - only show reports generated by this user
+        if self.username:
+            entries = [e for e in entries if e.get('username', '') == self.username]
+        else:
+            # If no username, only show reports that also have no username (backward compatibility)
+            entries = [e for e in entries if not e.get('username', '')]
 
         for e in entries[:10]:
             # Build row with hover/touch feedback
@@ -1246,11 +1390,11 @@ class Dashboard(QWidget):
         import os, sys, subprocess
         # Prevent automatic opening when triggered by calendar
         if getattr(self, '_calendar_triggered', False):
-            print("🚫 Blocked automatic report opening from calendar click")
+            print(" Blocked automatic report opening from calendar click")
             return
         if not os.path.exists(path):
             return
-        print(f"📂 Opening report: {path}")
+        print(f" Opening report: {path}")
         if sys.platform == 'darwin':
             subprocess.call(['open', path])
         elif sys.platform.startswith('linux'):
@@ -1286,7 +1430,7 @@ class Dashboard(QWidget):
     def load_metrics_into_parameters(self, report_path: str):
         import os, json
         # Add debug output to track when this is called
-        print(f"📊 load_metrics_into_parameters called for: {os.path.basename(report_path)}")
+        print(f" load_metrics_into_parameters called for: {os.path.basename(report_path)}")
         
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         reports_dir = os.path.join(base_dir, "..", "reports")
@@ -1427,7 +1571,6 @@ class Dashboard(QWidget):
             hr = self.metric_labels.get('heart_rate', QLabel()).text().replace(' ', '').replace('BPM', '') or '--'
             pr = self.metric_labels.get('pr_interval', QLabel()).text().replace(' ', '').replace('ms', '') or '--'
             qrs = self.metric_labels.get('qrs_duration', QLabel()).text().replace(' ', '').replace('ms', '') or '--'
-            qrs_axis = self.metric_labels.get('qrs_axis', QLabel()).text().replace('°', '') or '--'
             st_label_widget = self.metric_labels.get('st_interval') or self.metric_labels.get('st_segment')
             st = st_label_widget.text().strip() if st_label_widget and st_label_widget.text().strip() else '--'
             qtc_raw = self.metric_labels.get('qtc_interval', QLabel()).text() or '--/--'
@@ -1486,7 +1629,6 @@ class Dashboard(QWidget):
                 ("RR", f"{rr} ms" if rr != '--' else '--'),
                 ("RV5+SV1", f"{rv5_sv1_sum} mV"),
                 ("P/QRS/T", f"{p_qrs_t} mm"),
-                ("QRS Axis", f"{qrs_axis}°" if qrs_axis != '--' else '--'),
                 ("RV5/SV1", f"{rv5_sv1} mV"),
             ]
             
@@ -1557,7 +1699,7 @@ class Dashboard(QWidget):
             is_windows = platform.system() == 'Windows'
             platform_tag = "[Windows]" if is_windows else "[macOS/Linux]"
             
-            fs = 250.0  # Base fallback (matches ECG test page - unified across platforms)
+            fs = 500.0  # Base fallback (matches ECG test page - unified across platforms)
             if sampling_rate and sampling_rate > 10:
                 fs = float(sampling_rate)
             elif hasattr(self, 'ecg_test_page') and self.ecg_test_page:
@@ -1575,18 +1717,18 @@ class Dashboard(QWidget):
                 self._calc_count = 0
             self._calc_count += 1
             if self._calc_count <= 5:  # First 5 calculations (increased from 3)
-                print(f"🔍 {platform_tag} BPM Calculation - Sampling rate: {fs:.1f} Hz, Signal length: {len(ecg_signal)} samples")
+                print(f" {platform_tag} BPM Calculation - Sampling rate: {fs:.1f} Hz, Signal length: {len(ecg_signal)} samples")
             
             # Windows-specific warnings
-            if is_windows and fs == 250.0:
+            if is_windows and fs == 500.0:
                 if self._calc_count <= 5:
-                    print(f"⚠️ {platform_tag} Sampling rate detection failed, using fallback 250.0 Hz")
+                    print(f" {platform_tag} Sampling rate detection failed, using fallback 500.0 Hz")
             
             # Validation
             if fs <= 0 or not np.isfinite(fs):
                 if is_windows:
-                    print(f"⚠️ {platform_tag} Invalid sampling rate detected: {fs}, using fallback 250.0 Hz")
-                fs = 250.0  # Fallback
+                    print(f" {platform_tag} Invalid sampling rate detected: {fs}, using fallback 500.0 Hz")
+                fs = 500.0  # Fallback
             
             # Apply bandpass filter to enhance R-peaks (0.5-40 Hz)
             nyquist = fs / 2
@@ -1686,58 +1828,154 @@ class Dashboard(QWidget):
                     # Calculate heart rate from median R-R interval (more stable than instantaneous)
                     median_rr = np.median(valid_intervals)
                     heart_rate = 60000 / median_rr  # Convert to BPM
+
+                    print("Pratyaksh Dashboard Heart Rate", heart_rate)
                     
                     # Ensure reasonable range (10-300 BPM)
                     heart_rate = max(10, min(300, heart_rate))
                     
-                    # ANTI-FLICKERING: Smooth over last 10 readings for maximum stability
+                    # ENHANCED ANTI-FLICKERING: Smooth over last 10 readings with outlier rejection
                     if not hasattr(self, '_dashboard_bpm_buffer'):
                         self._dashboard_bpm_buffer = []
+                    if not hasattr(self, '_dashboard_bpm_ema'):
+                        self._dashboard_bpm_ema = None
                     
-                    # Store as float to preserve precision (same as ECG test page)
-                    self._dashboard_bpm_buffer.append(float(heart_rate))
-                    if len(self._dashboard_bpm_buffer) > 10:
-                        self._dashboard_bpm_buffer.pop(0)
+                    # INSTANT BPM UPDATE: Like Fluke machine - update instantly for ANY change (1, 5, 20 BPM)
+                    # No lock mechanism - BPM fluctuates instantly like real ECG devices
                     
-                    # Use mode (most frequent value) for maximum stability - best for steady BPM display
-                    # Round to integers first for mode calculation
-                    rounded_buffer = [int(round(x)) for x in self._dashboard_bpm_buffer]
-                    # Calculate mode (most frequent value)
-                    from collections import Counter
-                    if len(rounded_buffer) >= 3:  # Need at least 3 readings for mode
-                        mode_result = Counter(rounded_buffer).most_common(1)
-                        smoothed_bpm = mode_result[0][0] if mode_result else int(round(np.median(self._dashboard_bpm_buffer)))
+                    # SMOOTH BPM TRANSITION: No fluctuations during change - smooth transition to new value
+                    import time
+                    
+                    # Initialize lock mechanism
+                    if not hasattr(self, '_dashboard_bpm_locked'):
+                        self._dashboard_bpm_locked = False
+                    if not hasattr(self, '_dashboard_bpm_unlock_buffer'):
+                        self._dashboard_bpm_unlock_buffer = []
+                    if not hasattr(self, '_dashboard_bpm_unlock_start_time'):
+                        self._dashboard_bpm_unlock_start_time = None
+                    if not hasattr(self, '_dashboard_bpm_prelock_buffer'):
+                        self._dashboard_bpm_prelock_buffer = []
+                    if not hasattr(self, '_dashboard_bpm_transition_target'):
+                        self._dashboard_bpm_transition_target = None
+                    
+                    if hasattr(self, '_last_stable_dashboard_bpm') and self._last_stable_dashboard_bpm is not None:
+                        bpm_change = abs(heart_rate - self._last_stable_dashboard_bpm)
+                        current_time = time.time()
+                        
+                        # If BPM is LOCKED: Track changes and show smooth transition (no fluctuations)
+                        if self._dashboard_bpm_locked:
+                            # ANY CHANGE (>= 1 BPM): Start transition tracking
+                            if bpm_change >= 1:
+                                if self._dashboard_bpm_unlock_start_time is None:
+                                    # New change detected - start tracking
+                                    self._dashboard_bpm_unlock_start_time = current_time
+                                    self._dashboard_bpm_unlock_buffer = []
+                                    self._dashboard_bpm_transition_target = None
+                                
+                                self._dashboard_bpm_unlock_buffer.append(float(heart_rate))
+                                if len(self._dashboard_bpm_unlock_buffer) > 10:
+                                    self._dashboard_bpm_unlock_buffer.pop(0)
+                                
+                                # Check if change persisted
+                                elapsed = current_time - self._dashboard_bpm_unlock_start_time
+                                
+                                # Small changes (1-4 BPM): Require 0.5 seconds persistence
+                                # Large changes (>= 5 BPM): Require 0.3 seconds persistence
+                                required_time = 0.5 if bpm_change < 5 else 0.3
+                                min_readings = 5 if bpm_change < 5 else 3
+                                
+                                if elapsed >= required_time and len(self._dashboard_bpm_unlock_buffer) >= min_readings:
+                                    # Check if readings are stable (within 2 BPM)
+                                    last_readings = self._dashboard_bpm_unlock_buffer[-min_readings:]
+                                    min_val = min(last_readings)
+                                    max_val = max(last_readings)
+                                    if (max_val - min_val) <= 2:
+                                        # Change confirmed - calculate target and unlock
+                                        median_new_bpm = int(round(np.median(last_readings)))
+                                        self._dashboard_bpm_locked = False
+                                        self._last_stable_dashboard_bpm = median_new_bpm
+                                        self._dashboard_bpm_unlock_buffer = []
+                                        self._dashboard_bpm_unlock_start_time = None
+                                        self._dashboard_bpm_transition_target = None
+                                        smoothed_bpm = median_new_bpm
+                                    else:
+                                        # Not stable - show smooth transition to average (prevents fluctuations)
+                                        if self._dashboard_bpm_transition_target is None:
+                                            self._dashboard_bpm_transition_target = int(round(np.mean(last_readings)))
+                                        # Smooth transition: gradually move from current to target
+                                        current_bpm = self._last_stable_dashboard_bpm
+                                        target_bpm = self._dashboard_bpm_transition_target
+                                        # Use weighted average for smooth transition (70% current, 30% target)
+                                        smoothed_bpm = int(round(0.7 * current_bpm + 0.3 * target_bpm))
+                                else:
+                                    # Still tracking - show smooth MONOTONIC transition (no fluctuations, no overshoot)
+                                    if len(self._dashboard_bpm_unlock_buffer) >= 2:
+                                        # Set target ONCE at the start - don't change it during confirmation (prevents fluctuations)
+                                        if self._dashboard_bpm_transition_target is None:
+                                            # Calculate initial target from first few readings
+                                            avg_new = int(round(np.mean(self._dashboard_bpm_unlock_buffer[-3:])))
+                                            self._dashboard_bpm_transition_target = avg_new
+                                        
+                                        # Smooth MONOTONIC transition display (always moves towards target, never overshoots)
+                                        current_bpm = self._last_stable_dashboard_bpm
+                                        target_bpm = self._dashboard_bpm_transition_target
+                                        
+                                        # Gradual transition based on elapsed time (smooth increment/decrement)
+                                        transition_progress = min(1.0, elapsed / required_time)
+                                        calculated_bpm = int(round(current_bpm + (target_bpm - current_bpm) * transition_progress))
+                                        
+                                        # Ensure monotonic transition (never overshoot target, always move towards it)
+                                        if target_bpm > current_bpm:
+                                            # Increasing: clamp to [current_bpm, target_bpm]
+                                            smoothed_bpm = max(current_bpm, min(calculated_bpm, target_bpm))
+                                        else:
+                                            # Decreasing: clamp to [target_bpm, current_bpm]
+                                            smoothed_bpm = max(target_bpm, min(calculated_bpm, current_bpm))
+                                    else:
+                                        # Not enough readings - keep locked
+                                        smoothed_bpm = self._last_stable_dashboard_bpm
+                            
+                            # NO CHANGE (< 1 BPM): Reset tracking, keep locked
+                            else:
+                                smoothed_bpm = self._last_stable_dashboard_bpm
+                                self._dashboard_bpm_unlock_buffer = []
+                                self._dashboard_bpm_unlock_start_time = None
+                                self._dashboard_bpm_transition_target = None
+                        
+                        # If BPM is NOT LOCKED: Collect 5 readings for accuracy, then lock
+                        else:
+                            # Collect readings before locking for accuracy
+                            self._dashboard_bpm_prelock_buffer.append(float(heart_rate))
+                            if len(self._dashboard_bpm_prelock_buffer) > 7:
+                                self._dashboard_bpm_prelock_buffer.pop(0)
+                            
+                            # Lock after 5 stable readings (more accurate than 3 readings - reduces 100 vs 102 error)
+                            if len(self._dashboard_bpm_prelock_buffer) >= 5:
+                                # Use median of last 5 readings for accuracy (reduces 100 vs 102 error)
+                                median_bpm = np.median(self._dashboard_bpm_prelock_buffer[-5:])
+                                self._last_stable_dashboard_bpm = int(round(median_bpm))
+                                self._dashboard_bpm_locked = True  # LOCK after accurate reading
+                                self._dashboard_bpm_prelock_buffer = []  # Clear buffer
+                                smoothed_bpm = self._last_stable_dashboard_bpm
+                            else:
+                                # Not enough readings yet - use current value temporarily
+                                smoothed_bpm = int(round(heart_rate))
+                                self._last_stable_dashboard_bpm = smoothed_bpm
                     else:
-                        # Fallback to median if not enough data
-                        smoothed_bpm_float = np.median(self._dashboard_bpm_buffer)
-                        smoothed_bpm = int(round(smoothed_bpm_float))
+                        # First reading - use directly
+                        self._last_stable_dashboard_bpm = int(round(heart_rate))
+                        smoothed_bpm = self._last_stable_dashboard_bpm
+                        if not hasattr(self, '_dashboard_bpm_ema'):
+                            self._dashboard_bpm_ema = float(smoothed_bpm)
+                        if not hasattr(self, '_dashboard_bpm_buffer'):
+                            self._dashboard_bpm_buffer = [float(smoothed_bpm)]
                     
-                    # HYSTERESIS: Only update if change is ≥3 BPM for maximum stability
-                    if not hasattr(self, '_last_stable_dashboard_bpm'):
-                        self._last_stable_dashboard_bpm = smoothed_bpm
-                    
-                    if abs(smoothed_bpm - self._last_stable_dashboard_bpm) >= 3:
-                        self._last_stable_dashboard_bpm = smoothed_bpm
-                    
+                    print("Pratyaksh Dashboard BPM:", self._last_stable_dashboard_bpm)
                     metrics['heart_rate'] = self._last_stable_dashboard_bpm
                 else:
                     metrics['heart_rate'] = 0
             else:
                 metrics['heart_rate'] = 0
-            # Calculate QRS Axis - LIVE like ECG test page
-            if hasattr(self, 'ecg_test_page') and self.ecg_test_page and hasattr(self.ecg_test_page, 'data') and len(self.ecg_test_page.data) >= 6:
-                try:
-                    # Get current values from leads I and aVF (same as ECG test page)
-                    lead_i = self.ecg_test_page.data[0][-1] if len(self.ecg_test_page.data[0]) > 0 else 0
-                    lead_avf = self.ecg_test_page.data[5][-1] if len(self.ecg_test_page.data[5]) > 0 else 0
-                    
-                    # Calculate QRS axis (same as ECG test page)
-                    axis = int(np.arctan2(lead_avf, lead_i) * 180 / np.pi)
-                    metrics['qrs_axis'] = f"{axis}°"
-                except:
-                    metrics['qrs_axis'] = "0°"
-            else:
-                metrics['qrs_axis'] = "0°"
             
             # Calculate PR Interval - LIVE
             if len(peaks) > 1:
@@ -1905,10 +2143,6 @@ class Dashboard(QWidget):
             if 'qrs_duration' in ecg_metrics:
                 self.metric_labels['qrs_duration'].setText(f"{ecg_metrics['qrs_duration']} ms")
             
-            # Update QRS Axis
-            if 'qrs_axis' in ecg_metrics:
-                self.metric_labels['qrs_axis'].setText(ecg_metrics['qrs_axis'])
-            
             # Update ST Interval
             if 'st_interval' in ecg_metrics:
                 self.metric_labels['st_interval'].setText(f"{ecg_metrics['st_interval']}")
@@ -1946,11 +2180,11 @@ class Dashboard(QWidget):
                 try:
                     # Validate ECG test page data structure
                     if not hasattr(self.ecg_test_page, 'data') or not self.ecg_test_page.data:
-                        print("❌ ECG test page has no data")
+                        print(" ECG test page has no data")
                         return self._fallback_wave_update(frame)
                     
                     if len(self.ecg_test_page.data) <= 1:
-                        print("❌ Insufficient ECG data (need Lead II)")
+                        print(" Insufficient ECG data (need Lead II)")
                         return self._fallback_wave_update(frame)
                     
                     # Get Lead II data from ECG test page (index 1 is Lead II)
@@ -1958,19 +2192,19 @@ class Dashboard(QWidget):
                     
                     # Validate Lead II data
                     if not isinstance(lead_ii_data, (list, np.ndarray)) or len(lead_ii_data) <= 10:
-                        print("❌ Invalid Lead II data")
+                        print(" Invalid Lead II data")
                         return self._fallback_wave_update(frame)
                     
                     # Convert to numpy array safely
                     try:
                         original_data = np.asarray(lead_ii_data, dtype=float)
                     except Exception as e:
-                        print(f"❌ Error converting Lead II data to array: {e}")
+                        print(f" Error converting Lead II data to array: {e}")
                         return self._fallback_wave_update(frame)
                     
                     # Check for invalid values
                     if np.any(np.isnan(original_data)) or np.any(np.isinf(original_data)):
-                        print("❌ Invalid values (NaN/Inf) in Lead II data")
+                        print(" Invalid values (NaN/Inf) in Lead II data")
                         return self._fallback_wave_update(frame)
                     
                     # Get actual sampling rate from ECG test page
@@ -1983,7 +2217,7 @@ class Dashboard(QWidget):
                             if actual_sampling_rate <= 0 or actual_sampling_rate > 1000:
                                 actual_sampling_rate = 80
                     except Exception as e:
-                        print(f"❌ Error getting sampling rate: {e}")
+                        print(f" Error getting sampling rate: {e}")
                         actual_sampling_rate = 80
 
                     # Determine visible window based on wave speed (display feature only)
@@ -1992,7 +2226,7 @@ class Dashboard(QWidget):
                         if wave_speed <= 0:
                             wave_speed = 25.0
                     except Exception as e:
-                        print(f"❌ Error getting wave speed: {e}")
+                        print(f" Error getting wave speed: {e}")
                         wave_speed = 25.0
                     
                     # Baseline window at 25 mm/s (diagnostic standard)
@@ -2026,23 +2260,26 @@ class Dashboard(QWidget):
                         
                         # Validate display data
                         if np.any(np.isnan(display_y)) or np.any(np.isinf(display_y)):
-                            print("❌ Invalid display data generated")
+                            print(" Invalid display data generated")
                             return self._fallback_wave_update(frame)
                         
                         self.ecg_line.set_ydata(display_y)
                         
                     except Exception as e:
-                        print(f"❌ Error processing display data: {e}")
+                        print(f" Error processing display data: {e}")
                         return self._fallback_wave_update(frame)
                     
                     # Calculate and update live ECG metrics using ORIGINAL data with SAME sampling rate
                     try:
+                        print("Pratyaksh log I")
                         # Use ECG test page's own calculation methods for consistency
                         if hasattr(self.ecg_test_page, 'calculate_ecg_metrics'):
                             self.ecg_test_page.calculate_ecg_metrics()
                         
+                        print("Pratyaksh log II")
                         # Get metrics from ECG test page to ensure synchronization
                         if hasattr(self.ecg_test_page, 'get_current_metrics'):
+                            print("Pratyaksh get_current_metrics I")
                             ecg_metrics = self.ecg_test_page.get_current_metrics()
                             # Debug: Print metrics to see what's being calculated
                             if hasattr(self, '_debug_counter'):
@@ -2050,7 +2287,7 @@ class Dashboard(QWidget):
                             else:
                                 self._debug_counter = 1
                             if self._debug_counter % 50 == 0:  # Optimized: Print every 50 updates (was 10) - reduces console spam
-                                print(f"🔍 Dashboard ECG metrics: {ecg_metrics}")
+                                print(f" Dashboard ECG metrics: {ecg_metrics}")
                             self.update_dashboard_metrics_from_ecg()
                         
                         # Calculate and update stress level and HRV (throttled to every 3 seconds for stability)
@@ -2067,20 +2304,20 @@ class Dashboard(QWidget):
                             self.update_live_conclusion()
                             self._last_conclusion_update = time.time()
                     except Exception as e:
-                        print(f"❌ Error calculating ECG metrics: {e}")
+                        print(f" Error calculating ECG metrics: {e}")
                         # Continue with display even if metrics fail
                     
                     return [self.ecg_line]
                     
                 except Exception as e:
-                    print(f"❌ Error getting data from ECG test page: {e}")
+                    print(f" Error getting data from ECG test page: {e}")
                     return self._fallback_wave_update(frame)
             
             # No ECG test page available
             return self._fallback_wave_update(frame)
             
         except Exception as e:
-            print(f"❌ Critical error in update_ecg: {e}")
+            print(f" Critical error in update_ecg: {e}")
             return self._fallback_wave_update(frame)
     
     def _fallback_wave_update(self, frame):
@@ -2092,7 +2329,7 @@ class Dashboard(QWidget):
             # Do not compute/update metrics from mock wave; keep zeros until user starts
             return [self.ecg_line]
         except Exception as e:
-            print(f"❌ Error in fallback wave update: {e}")
+            print(f" Error in fallback wave update: {e}")
             return [self.ecg_line]
     
     def heart_rate_triple_click(self, event):
@@ -2114,12 +2351,12 @@ class Dashboard(QWidget):
         self.last_heart_rate_click_time = current_time
         
         # Show click count in terminal
-        print(f"🖱️ Heart Rate Metric Click #{self.heart_rate_click_count}")
+        print(f" Heart Rate Metric Click #{self.heart_rate_click_count}")
         
         # If triple-clicked, open crash log dialog
         if self.heart_rate_click_count >= 3:
             self.heart_rate_click_count = 0  # Reset counter
-            print("🔧 Triple-click detected! Opening diagnostic dialog...")
+            print(" Triple-click detected! Opening diagnostic dialog...")
             self.crash_logger.log_info("Triple-click detected on heart rate metric", "TRIPLE_CLICK")
             self.open_crash_log_dialog()
         
@@ -2139,10 +2376,10 @@ class Dashboard(QWidget):
     
     def update_ecg_metrics(self, intervals):
         import time as _time
-        # Throttle: update at most once every 5 seconds
+        # Throttle: update at most once every 3.0 seconds
         if not hasattr(self, '_last_metrics_update_ts'):
             self._last_metrics_update_ts = 0.0
-        if _time.time() - self._last_metrics_update_ts < 5.0:
+        if _time.time() - self._last_metrics_update_ts < 3.0:
             return
         if 'Heart_Rate' in intervals and intervals['Heart_Rate'] is not None:
             self.metric_labels['heart_rate'].setText(
@@ -2166,8 +2403,6 @@ class Dashboard(QWidget):
                 self.metric_labels['qtc_interval'].setText(f"{int(round(intervals['QTc']))} ms")
             else:
                 self.metric_labels['qtc_interval'].setText("-- ms")
-        if 'QRS_axis' in intervals and intervals['QRS_axis'] is not None:
-            self.metric_labels['qrs_axis'].setText(str(intervals['QRS_axis']))
         if 'ST' in intervals and intervals['ST'] is not None:
             # Current metrics card uses 'st_interval' key
             key = 'st_interval' if 'st_interval' in self.metric_labels else 'st_segment'
@@ -2219,11 +2454,6 @@ class Dashboard(QWidget):
                 qrs_value = qrs_text.split()[0] if ' ' in qrs_text else qrs_text
                 self.ecg_test_page.metric_labels['qrs_duration'].setText(qrs_value)
                 
-            if 'qrs_axis' in self.metric_labels and 'qrs_axis' in self.ecg_test_page.metric_labels:
-                qrs_axis_text = self.metric_labels['qrs_axis'].text()
-                qrs_axis_value = qrs_axis_text.replace('°', '') if '°' in qrs_axis_text else qrs_axis_text
-                self.ecg_test_page.metric_labels['qrs_axis'].setText(f"{qrs_axis_value}°")
-                
             if 'st_interval' in self.metric_labels and 'st_segment' in self.ecg_test_page.metric_labels:
                 st_text = self.metric_labels['st_interval'].text()
                 st_value = st_text.split()[0] if ' ' in st_text else st_text
@@ -2242,10 +2472,10 @@ class Dashboard(QWidget):
                     qtc_value = qtc_text.split()[0] if ' ' in qtc_text else qtc_text
                     self.ecg_test_page.metric_labels['qtc_interval'].setText(qtc_value)
                     
-            print("✅ Synced dashboard metrics to ECG test page")
+            print(" Synced dashboard metrics to ECG test page")
             
         except Exception as e:
-            print(f"⚠️ Error syncing dashboard metrics to ECG test page: {e}")
+            print(f" Error syncing dashboard metrics to ECG test page: {e}")
     
     def update_dashboard_metrics_from_ecg(self):
         """Update dashboard metrics from ECG test page data - matches 12-lead test page update frequency"""
@@ -2269,13 +2499,14 @@ class Dashboard(QWidget):
             if hasattr(self, 'ecg_test_page') and self.ecg_test_page:
                 # Get current metrics from ECG test page
                 if hasattr(self.ecg_test_page, 'get_current_metrics'):
+                    print("Pratyaksh get_current_metrics II")
                     ecg_metrics = self.ecg_test_page.get_current_metrics()
                     
                     # Update dashboard metrics with ECG test page data
                     hr_text = ecg_metrics.get('heart_rate') if ecg_metrics else None
-                    if (not hr_text or hr_text in ('00', '--')) and hasattr(self.ecg_test_page, '_last_hr_display'):
+                    if (not hr_text or hr_text in ('00', '--')) and hasattr(self.ecg_test_page, '_last_displayed_hr'):
                         try:
-                            last_hr = int(self.ecg_test_page._last_hr_display)
+                            last_hr = int(self.ecg_test_page._last_displayed_hr)
                             hr_text = str(last_hr) if last_hr > 0 else None
                         except Exception:
                             hr_text = None
@@ -2297,13 +2528,6 @@ class Dashboard(QWidget):
                             self.metric_labels['qrs_duration'].setText(f"{qrs_text} ms")
                         else:
                             self.metric_labels['qrs_duration'].setText("--")
-                    
-                    if 'qrs_axis' in ecg_metrics:
-                        qrs_axis_text = ecg_metrics['qrs_axis']
-                        if qrs_axis_text and qrs_axis_text != '--':
-                            self.metric_labels['qrs_axis'].setText(f"{qrs_axis_text}°")
-                        else:
-                            self.metric_labels['qrs_axis'].setText("--")
                     
                     # if 'sampling_rate' in ecg_metrics:  # Commented out
                     #     sr_text = ecg_metrics['sampling_rate']
@@ -2334,7 +2558,6 @@ class Dashboard(QWidget):
                                 'heart_rate': self.metric_labels['heart_rate'].text() if 'heart_rate' in self.metric_labels else None,
                                 'pr_interval': self.metric_labels['pr_interval'].text() if 'pr_interval' in self.metric_labels else None,
                                 'qrs_duration': self.metric_labels['qrs_duration'].text() if 'qrs_duration' in self.metric_labels else None,
-                                'qrs_axis': self.metric_labels['qrs_axis'].text() if 'qrs_axis' in self.metric_labels else None,
                                 'st_interval': self.metric_labels['st_interval'].text() if 'st_interval' in self.metric_labels else None,
                                 # 'sampling_rate': self.metric_labels['sampling_rate'].text() if 'sampling_rate' in self.metric_labels else None,  # Commented out
                                 'qtc_interval': self.metric_labels['qtc_interval'].text() if 'qtc_interval' in self.metric_labels else None,
@@ -2360,7 +2583,7 @@ class Dashboard(QWidget):
             self._last_metrics_update_ts = _time.time()
                             
         except Exception as e:
-            print(f"❌ Error updating dashboard metrics from ECG: {e}")
+            print(f" Error updating dashboard metrics from ECG: {e}")
             
     def generate_pdf_report(self):
         from PyQt5.QtWidgets import QFileDialog, QMessageBox
@@ -2436,7 +2659,7 @@ class Dashboard(QWidget):
         if hasattr(self, 'ecg_test_page') and getattr(self.ecg_test_page, '_last_qtcf_ms', None):
             QTcF = int(self.ecg_test_page._last_qtcf_ms or 0)
         
-        print(f"📊 PDF Report ECG Values - HR: {HR}, PR: {PR}, QRS: {QRS}, QT: {QT}, QTc: {QTc}, QTcF: {QTcF}, ST: {ST}")
+        print(f" PDF Report ECG Values - HR: {HR}, PR: {PR}, QRS: {QRS}, QT: {QT}, QTc: {QTc}, QTcF: {QTcF}, ST: {ST}")
 
         # Prepare data for the report generator
         ecg_data = {
@@ -2527,16 +2750,16 @@ class Dashboard(QWidget):
                             plt.close(fig)  # Close to free memory
                             lead_img_paths[lead] = img_path
                             
-                            print(f" ✅ Captured 10s Lead {lead}: {len(recent_data)} samples")
+                            print(f"  Captured 10s Lead {lead}: {len(recent_data)} samples")
                         else:
-                            print(f" ⚠️ No data available for Lead {lead}")
+                            print(f"  No data available for Lead {lead}")
                             
                     except Exception as e:
-                        print(f" ❌ Error capturing Lead {lead}: {e}")
+                        print(f"  Error capturing Lead {lead}: {e}")
                 else:
-                    print(f" ⚠️ Lead {lead} not available (index {i})")
+                    print(f" Lead {lead} not available (index {i})")
         else:
-            print(" ❌ No ECG test page or data available for capture")
+            print(" No ECG test page or data available for capture")
         
         # Method 3: Check current stack widget for ECG pages
         if not lead_img_paths and hasattr(self, 'page_stack'):
@@ -2661,7 +2884,7 @@ class Dashboard(QWidget):
                                 # Get the last patient (most recent)
                                 patient = all_patients["patients"][-1]
                 except Exception as e:
-                    print(f"⚠️ Error loading patient data: {e}")
+                    print(f" Error loading patient data: {e}")
                     patient = None
 
                 # Always stamp current date/time from system
@@ -2674,7 +2897,7 @@ class Dashboard(QWidget):
                 self.update_live_conclusion()
                 
                 # Calculate wave amplitudes before generating report
-                print("🔬 Calculating wave amplitudes for report...")
+                print(" Calculating wave amplitudes for report...")
                 if hasattr(self, 'ecg_test_page') and self.ecg_test_page:
                     try:
                         # PRIORITY: Use standardized RV5/SV1 calculation (median beat method)
@@ -2684,12 +2907,12 @@ class Dashboard(QWidget):
                                 ecg_data['rv5'] = float(rv5_calc)
                             if sv1_calc is not None and sv1_calc != 0.0:
                                 ecg_data['sv1'] = float(sv1_calc)
-                            print(f"🔬 Using standardized RV5/SV1: RV5={ecg_data.get('rv5', 0):.3f}, SV1={ecg_data.get('sv1', 0):.3f}")
+                            print(f" Using standardized RV5/SV1: RV5={ecg_data.get('rv5', 0):.3f}, SV1={ecg_data.get('sv1', 0):.3f}")
                         
                         # Get other wave amplitudes (P, QRS, T) from calculate_wave_amplitudes
-                        print(f"🔬 ECG test page found, calling calculate_wave_amplitudes()...")
+                        print(f" ECG test page found, calling calculate_wave_amplitudes()...")
                         wave_amps = self.ecg_test_page.calculate_wave_amplitudes()
-                        print(f"🔬 Raw wave_amps returned: {wave_amps}")
+                        print(f" Raw wave_amps returned: {wave_amps}")
                         
                         # Add wave amplitudes to ecg_data (only if not already set from standardized function)
                         ecg_data['p_amp'] = wave_amps.get('p_amp', 0.0)
@@ -2701,12 +2924,12 @@ class Dashboard(QWidget):
                         if 'sv1' not in ecg_data or ecg_data['sv1'] == 0.0:
                             ecg_data['sv1'] = wave_amps.get('sv1', 0.0)
                         
-                        print(f"📊 Wave amplitudes added to ecg_data:")
+                        print(f" Wave amplitudes added to ecg_data:")
                         print(f"   P={ecg_data['p_amp']:.4f}, QRS={ecg_data['qrs_amp']:.4f}, T={ecg_data['t_amp']:.4f}")
                         print(f"   RV5={ecg_data['rv5']:.4f}, SV1={ecg_data['sv1']:.4f}, RV5+SV1={ecg_data['rv5'] + ecg_data['sv1']:.4f}")
-                        print(f"🔬 Final ecg_data keys: {ecg_data.keys()}")
+                        print(f" Final ecg_data keys: {ecg_data.keys()}")
                     except Exception as e:
-                        print(f"⚠️ Error calculating wave amplitudes: {e}")
+                        print(f" Error calculating wave amplitudes: {e}")
                         import traceback
                         traceback.print_exc()
                         ecg_data['p_amp'] = 0.0
@@ -2715,7 +2938,7 @@ class Dashboard(QWidget):
                         ecg_data['rv5'] = 0.0
                         ecg_data['sv1'] = 0.0
                 else:
-                    print("⚠️ No ECG test page available for wave amplitude calculation")
+                    print(" No ECG test page available for wave amplitude calculation")
                     ecg_data['p_amp'] = 0.0
                     ecg_data['qrs_amp'] = 0.0
                     ecg_data['t_amp'] = 0.0
@@ -2731,21 +2954,15 @@ class Dashboard(QWidget):
                             if p_axis is not None and p_axis != 0:
                                 ecg_data['p_axis'] = int(round(p_axis))
                         
-                        # Get QRS axis (also check if already in ecg_data from metrics)
-                        if hasattr(self.ecg_test_page, 'calculate_qrs_axis_from_median'):
-                            qrs_axis = self.ecg_test_page.calculate_qrs_axis_from_median()
-                            if qrs_axis is not None and qrs_axis != 0:
-                                ecg_data['QRS_axis'] = f"{int(round(qrs_axis))}°"
-                        
                         # Get T axis
                         if hasattr(self.ecg_test_page, 'calculate_t_axis_from_median'):
                             t_axis = self.ecg_test_page.calculate_t_axis_from_median()
                             if t_axis is not None and t_axis != 0:
                                 ecg_data['t_axis'] = int(round(t_axis))
                         
-                        print(f"🔬 Added axis values to ecg_data: P={ecg_data.get('p_axis', '--')}, QRS={ecg_data.get('QRS_axis', '--')}, T={ecg_data.get('t_axis', '--')}")
+                        print(f" Added axis values to ecg_data: P={ecg_data.get('p_axis', '--')}, QRS={ecg_data.get('QRS_axis', '--')}, T={ecg_data.get('t_axis', '--')}")
                     except Exception as e:
-                        print(f"⚠️ Error getting axis values from ECG test page: {e}")
+                        print(f" Error getting axis values from ECG test page: {e}")
                 
                 # Add user details to ecg_data for JSON export
                 ecg_data['user'] = {
@@ -2825,7 +3042,8 @@ class Dashboard(QWidget):
                         "title": "ECG Report",
                         "patient": "",  # Fill from form if available
                         "date": now.strftime('%Y-%m-%d'),
-                        "time": now.strftime('%H:%M:%S')
+                        "time": now.strftime('%H:%M:%S'),
+                        "username": self.username or ""  # Add username to track report ownership
                     }
                     items = [meta] + items
                     items = items[:10]
@@ -2866,7 +3084,7 @@ class Dashboard(QWidget):
                         # No valid heart rate available
                         self.current_heart_rate = 0
         except Exception as e:
-            print(f"⚠️ Error parsing heart rate: {e}")
+            print(f" Error parsing heart rate: {e}")
             self.current_heart_rate = 0
         
         # If there is no valid heart data (HR < 10 bpm or 0 / '--'), 
@@ -2887,7 +3105,7 @@ class Dashboard(QWidget):
                         self.heartbeat_sound.setVolume(100)  # Maximum volume
                     self.heartbeat_sound.play()
                 except Exception as e:
-                    print(f"⚠️ Error playing heartbeat sound: {e}")
+                    print(f" Error playing heartbeat sound: {e}")
             
             # Reset heartbeat phase for new beat
             self.heartbeat_phase = 0
@@ -2964,13 +3182,13 @@ class Dashboard(QWidget):
             # Load the created sound
             if QSound is not None:
                 self.heartbeat_sound = QSound(heartbeat_path)
-                print(f"✅ Created synthetic heartbeat sound: {heartbeat_path}")
+                print(f" Created synthetic heartbeat sound: {heartbeat_path}")
             else:
                 self.heartbeat_sound = None
-                print(f"⚠️ QSound not available - heartbeat sound disabled")
+                print(f" QSound not available - heartbeat sound disabled")
             
         except Exception as e:
-            print(f"⚠️ Could not create heartbeat sound: {e}")
+            print(f" Could not create heartbeat sound: {e}")
             self.heartbeat_sound = None
 
     def set_heartbeat_sound_enabled(self, enabled):
@@ -2981,7 +3199,7 @@ class Dashboard(QWidget):
             try:
                 self.heartbeat_sound.stop()
             except Exception as e:
-                print(f"⚠️ Unable to stop heartbeat sound: {e}")
+                print(f" Unable to stop heartbeat sound: {e}")
 
     def tr(self, text):
         return translate_text(text, getattr(self, "current_language", "en"))
@@ -3095,7 +3313,7 @@ class Dashboard(QWidget):
                         self.hrv_label.setText(f"{hrv_label_text} {int(smoothed_hrv_ms)}ms")
                         self.hrv_label.setStyleSheet("font-size: 13px; color: #666;")
         except Exception as e:
-            print(f"⚠️ Error calculating stress/HRV: {e}")
+            print(f" Error calculating stress/HRV: {e}")
     
     def update_live_conclusion(self):
         """Generate personalized conclusion based on current ECG metrics"""
@@ -3266,16 +3484,16 @@ class Dashboard(QWidget):
                     with open(conclusions_file, 'w') as f:
                         json.dump(conclusions_data, f, indent=2)
                     
-                    print(f"✅ Saved {len(clean_findings)} findings to last_conclusions.json")
+                    print(f" Saved {len(clean_findings)} findings to last_conclusions.json")
                     print(f"   Findings: {clean_findings}")
                 else:
-                    print(f"⏭️ Skipped saving empty findings to last_conclusions.json (waiting for valid ECG data)")
+                    print(f" Skipped saving empty findings to last_conclusions.json (waiting for valid ECG data)")
                 
             except Exception as save_err:
-                print(f"⚠️ Error saving conclusions to JSON: {save_err}")
+                print(f" Error saving conclusions to JSON: {save_err}")
         
         except Exception as e:
-            print(f"⚠️ Error updating conclusion: {e}")
+            print(f" Error updating conclusion: {e}")
     def handle_sign_out(self):
         # User label removed per request
         # self.user_label.setText("Not signed in")
@@ -3287,6 +3505,37 @@ class Dashboard(QWidget):
                 self._session_recorder = None
         except Exception:
             pass
+        
+        # Clean up ECG test page serial connection before closing
+        try:
+            if hasattr(self, 'ecg_test_page') and self.ecg_test_page:
+                # Stop acquisition if running
+                if hasattr(self.ecg_test_page, 'serial_reader') and self.ecg_test_page.serial_reader:
+                    try:
+                        print("🔌 Closing serial connection on sign out...")
+                        self.ecg_test_page.serial_reader.stop()
+                        self.ecg_test_page.serial_reader.close()
+                        self.ecg_test_page.serial_reader = None
+                        print(" Serial connection closed successfully")
+                    except Exception as e:
+                        print(f" Error closing serial connection: {e}")
+                
+                # Stop timers
+                if hasattr(self.ecg_test_page, 'timer') and self.ecg_test_page.timer:
+                    try:
+                        self.ecg_test_page.timer.stop()
+                    except Exception:
+                        pass
+                
+                # Stop demo manager if active
+                if hasattr(self.ecg_test_page, 'demo_manager') and self.ecg_test_page.demo_manager:
+                    try:
+                        self.ecg_test_page.demo_manager.stop_demo_data()
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f" Error cleaning up ECG test page: {e}")
+        
         self.close()
         
     def open_hyperkalemia_test(self):
@@ -3297,7 +3546,7 @@ class Dashboard(QWidget):
             hyperkalemia_window.show()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open Hyperkalemia Test window: {str(e)}")
-            print(f"❌ Error opening Hyperkalemia test: {e}")
+            print(f" Error opening Hyperkalemia test: {e}")
 
     def open_history_window(self):
         """Open the ECG report history window."""
@@ -3316,7 +3565,7 @@ class Dashboard(QWidget):
             hrv_window.show()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open HRV Test window: {str(e)}")
-            print(f"❌ Error opening HRV test: {e}")   
+            print(f" Error opening HRV test: {e}")   
     
     def go_to_lead_test(self):
         if hasattr(self, 'ecg_test_page') and hasattr(self.ecg_test_page, 'update_metrics_frame_theme'):
@@ -3510,7 +3759,7 @@ class Dashboard(QWidget):
                         self.cloud_sync_btn.setText("Cloud Sync")
                         self.cloud_sync_btn.setEnabled(True)
                         if uploaded_count > 0:
-                            msg = f"✅ Successfully uploaded {uploaded_count} file(s) to AWS S3!"
+                            msg = f" Successfully uploaded {uploaded_count} file(s) to AWS S3!"
                             if errors:
                                 msg += f"\n\n{len(errors)} error(s):\n" + "\n".join(errors[:3])
                             QMessageBox.information(self, "Cloud Sync Complete", msg)
@@ -3531,7 +3780,7 @@ class Dashboard(QWidget):
                 "Sync Error",
                 f"Failed to sync to cloud:\n{str(e)}"
             )
-            print(f"❌ Cloud sync error: {e}")
+            print(f" Cloud sync error: {e}")
     
     def apply_dark_theme(self):
         """Apply dark theme styling to all UI components"""

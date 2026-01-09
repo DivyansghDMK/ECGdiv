@@ -100,13 +100,12 @@ class Lead12BlackPage(QWidget):
                 qrs_duration = 0.08  # TODO: Calculate from real QRS complex
                 qt_interval = 0.4  # TODO: Calculate from real Q-T interval
                 qtc_interval = 0.42  # TODO: Calculate corrected QT (Bazett's formula)
-                qrs_axis = "--"  # TODO: Calculate from lead I and aVF
                 st_segment = "--"  # TODO: Calculate ST elevation/depression
                 with open("ecg_metrics_output.txt", "w") as f:
                     f.write("# ECG Metrics Output (TEST/DEBUG ONLY)\n")
                     f.write("# WARNING: These are placeholder values, not real calculations!\n")
-                    f.write("# Format: PR_interval(ms), QRS_duration(ms), QTc_interval(ms), QRS_axis, ST_segment\n")
-                    f.write(f"{pr_interval*1000}, {qrs_duration*1000}, {qtc_interval*1000}, {qrs_axis}, {st_segment}\n")
+                    f.write("# Format: PR_interval(ms), QRS_duration(ms), QTc_interval(ms), ST_segment\n")
+                    f.write(f"{pr_interval*1000}, {qrs_duration*1000}, {qtc_interval*1000}, {st_segment}\n")
                     # TODO: Replace with real peak detection from Pan-Tompkins algorithm
                     f.write(f"P_peaks: {list(np.array([100, 200, 300]))}  # PLACEHOLDER\n")
                     f.write(f"Q_peaks: {list(np.array([150, 250, 350]))}  # PLACEHOLDER\n")
@@ -114,7 +113,7 @@ class Lead12BlackPage(QWidget):
                     f.write(f"S_peaks: {list(np.array([210, 310, 410]))}  # PLACEHOLDER\n")
                     f.write(f"T_peaks: {list(np.array([240, 340, 440]))}  # PLACEHOLDER\n")
                 if self.dashboard and hasattr(self.dashboard, "update_ecg_metrics"):
-                    self.dashboard.update_ecg_metrics(pr_interval, qrs_duration, qtc_interval, qrs_axis, st_segment)
+                    self.dashboard.update_ecg_metrics(pr_interval, qrs_duration, qtc_interval, st_segment)
                     QTimer.singleShot(0, self.dashboard.repaint)
             except Exception as e:
                 print("ECG analysis error:", e)
@@ -425,7 +424,7 @@ class ECGMenu(QGroupBox):
             ("Save ECG", self.on_save_ecg),
             ("Open ECG", self.on_open_ecg),
             ("Working Mode", self.on_working_mode),
-            ("Printer Setup", self.on_printer_setup),
+            ("Report Setup", self.on_report_setup),
             ("Set Filter", self.on_set_filter),
             ("System Setup", self.on_system_setup),
             ("Load Default", self.on_load_default),
@@ -475,7 +474,7 @@ class ECGMenu(QGroupBox):
                 "Save ECG": self.show_save_ecg,
                 "Open ECG": self.show_open_ecg,
                 "Working Mode": self.show_working_mode,
-                "Printer Setup": self.show_printer_setup,
+                "Report Setup": self.show_report_setup,
                 "Set Filter": self.show_set_filter,
                 "System Setup": self.show_system_setup,
                 "Load Default": self.show_load_default,
@@ -557,8 +556,8 @@ class ECGMenu(QGroupBox):
         self.show_open_ecg()
     def on_working_mode(self):
         self.show_working_mode()
-    def on_printer_setup(self):
-        self.show_printer_setup()
+    def on_report_setup(self):
+        self.show_report_setup()
     def on_set_filter(self):
         self.show_set_filter()
     def on_system_setup(self):
@@ -1039,9 +1038,9 @@ class ECGMenu(QGroupBox):
                                 prefill = all_patients["patients"][-1]
                                 # Cache in memory for subsequent opens during this session
                                 setattr(self, "patient_details", prefill)
-                                print(f"✅ Loaded last patient from centralized DB: {prefill.get('patient_name', 'Unknown')}")
+                                print(f" Loaded last patient from centralized DB: {prefill.get('patient_name', 'Unknown')}")
                 except Exception as e:
-                    print(f"⚠️ Could not load from centralized DB: {e}")
+                    print(f" Could not load from centralized DB: {e}")
                     prefill = None
 
             if prefill:
@@ -1147,9 +1146,9 @@ class ECGMenu(QGroupBox):
                     try:
                         with open(patients_db_file, "r") as jf:
                             all_patients = json.load(jf)
-                        print(f"✅ Loaded existing patients database: {len(all_patients.get('patients', []))} patients")
+                        print(f" Loaded existing patients database: {len(all_patients.get('patients', []))} patients")
                     except Exception as load_err:
-                        print(f"⚠️ Could not load patients database, creating new: {load_err}")
+                        print(f" Could not load patients database, creating new: {load_err}")
                         all_patients = {"patients": []}
                 
                 # Add unique ID to new patient
@@ -1164,17 +1163,17 @@ class ECGMenu(QGroupBox):
                 with open(patients_db_file, "w") as jf:
                     json.dump(all_patients, jf, indent=2)
                 
-                print(f"✅ Patient saved to centralized database! Total patients: {len(all_patients['patients'])}")
+                print(f" Patient saved to centralized database! Total patients: {len(all_patients['patients'])}")
                 
             except Exception as disk_err:
-                print(f"⚠️ Could not persist patient details to centralized DB: {disk_err}")
+                print(f" Could not persist patient details to centralized DB: {disk_err}")
                 import traceback
                 traceback.print_exc()
         except Exception as e:
-            print(f"⚠️ Could not cache patient details: {e}")
+            print(f" Could not cache patient details: {e}")
 
         # Success message and close panel
-        QMessageBox.information(self.parent(), "Saved", f"✅ Patient details saved successfully!\n\nTotal patients in database: {len(all_patients.get('patients', []))}")
+        QMessageBox.information(self.parent(), "Saved", f" Patient details saved successfully!\n\nTotal patients in database: {len(all_patients.get('patients', []))}")
         # Close the panel after successful save (values remain persisted for next open)
         self.hide_sliding_panel()
 
@@ -1487,7 +1486,7 @@ class ECGMenu(QGroupBox):
                 'style': 'primary'
             },
             {
-                'text': 'Exit',
+                'text': 'Cancel',
                 'action': self.hide_sliding_panel,
                 'style': 'danger'
             }
@@ -1537,20 +1536,20 @@ class ECGMenu(QGroupBox):
         QMessageBox.information(self.parent(), "Saved", "Working mode settings saved and applied to ECG display")
         self.hide_sliding_panel()
 
-    # ----------------------------- Printer Setup -----------------------------
+    # ----------------------------- Report Setup -----------------------------
 
-    def show_printer_setup(self):
+    def show_report_setup(self):
         self.ensure_sliding_panel_ready()
-        content_widget = self.create_printer_setup_content()
-        self.show_sliding_panel(content_widget, "Printer Setup", "Printer Setup")
+        content_widget = self.create_report_setup_content()
+        self.show_sliding_panel(content_widget, "Report Setup", "Report Setup")
 
-    def create_printer_setup_content(self):
+    def create_report_setup_content(self):
 
         # Get current settings from settings manager
         if not self.settings_manager:
             self.settings_manager = SettingsManager()
 
-        # Define sections for printer setup
+        # Define sections for report setup
         sections = [
             {
                 'title': 'Average Wave',
@@ -1568,23 +1567,23 @@ class ECGMenu(QGroupBox):
         buttons = [
             {
                 'text': 'Save',
-                'action': self.save_printer_settings,
+                'action': self.save_report_settings,
                 'style': 'primary'
             },
             {
-                'text': 'Exit',
+                'text': 'Cancel',
                 'action': self.hide_sliding_panel,
                 'style': 'danger'
             }
         ]
         
-        return self.create_unified_control_panel("Printer Setup", sections, buttons)
+        return self.create_unified_control_panel("Report Setup", sections, buttons)
 
-    def on_printer_setting_changed(self, value):
-        print(f"Printer setting changed to: {value}")
+    def on_report_setting_changed(self, value):
+        print(f"Report setting changed to: {value}")
 
-    def save_printer_settings(self):
-        QMessageBox.information(self.parent(), "Saved", "Printer settings saved successfully!")
+    def save_report_settings(self):
+        QMessageBox.information(self.parent(), "Saved", "Report settings saved successfully!")
         self.hide_sliding_panel()
 
     # ----------------------------- Set Filter -----------------------------
@@ -1685,7 +1684,7 @@ class ECGMenu(QGroupBox):
                 'style': 'primary'
             },
             {
-                'text': 'Exit',
+                'text': 'Cancel',
                 'action': self.hide_sliding_panel,
                 'style': 'danger'
             }
@@ -1713,10 +1712,10 @@ class ECGMenu(QGroupBox):
         layout.setContentsMargins(margin_size, margin_size, margin_size, margin_size)
         layout.setSpacing(spacing_size)
 
-        # Top hint header bar
-        hint_header = QLabel(self.tr("Hint") if hasattr(self, 'tr') else "Hint")
-        hint_header.setAlignment(Qt.AlignCenter)
-        hint_header.setStyleSheet("""
+        # Top load_default header bar
+        load_default_header = QLabel(self.tr("Load Default Settings") if hasattr(self, 'tr') else "Load Default Settings")
+        load_default_header.setAlignment(Qt.AlignCenter)
+        load_default_header.setStyleSheet("""
             QLabel {
                 background: #ff8400;
                 color: #ffffff;
@@ -1725,7 +1724,7 @@ class ECGMenu(QGroupBox):
                 padding: 10px;
             }
         """)
-        layout.addWidget(hint_header)
+        layout.addWidget(load_default_header)
 
         # Message area replicating hardware UI copy
         message_frame = QFrame()
@@ -1818,7 +1817,7 @@ class ECGMenu(QGroupBox):
                 try:
                     self.on_setting_changed(key, value)
                 except Exception as err:
-                    print(f"⚠️ Unable to broadcast default for {key}: {err}")
+                    print(f" Unable to broadcast default for {key}: {err}")
 
         # Refresh ECG test page visual state if available
         if hasattr(self, 'ecg_test_page') and self.ecg_test_page:
@@ -1828,7 +1827,7 @@ class ECGMenu(QGroupBox):
                 if hasattr(self.ecg_test_page, 'update_plots'):
                     self.ecg_test_page.update_plots()
             except Exception as err:
-                print(f"⚠️ Unable to refresh ECG test page after defaults: {err}")
+                print(f" Unable to refresh ECG test page after defaults: {err}")
 
         QMessageBox.information(
             self.parent(),
@@ -2347,7 +2346,14 @@ class ECGMenu(QGroupBox):
                 indicator_margin_right = 8
             
             for i, (text, val) in enumerate(section_data['options']):
-                btn = QRadioButton(self.tr(text))
+                # Keep language option labels in English (don't translate them)
+                # Check if this is the language section by setting_key or title
+                is_language_section = (
+                    section_data.get('setting_key') == 'system_language' or 
+                    section_data.get('title') == 'LANGUAGE'
+                )
+                display_text = text if is_language_section else self.tr(text)
+                btn = QRadioButton(display_text)
                 btn.setStyleSheet(f"""
                     QRadioButton {{
                         font: bold {radio_font_size}pt Arial;

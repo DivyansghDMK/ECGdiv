@@ -138,12 +138,14 @@ class SignIn:
             return False, "Full Name already registered."
         if phone and not self._is_unique("phone", phone):
             return False, "Phone number already registered."
+        from datetime import datetime
         record: Dict[str, Any] = {
             "password": password,
             "full_name": full_name or "",
             "phone": phone or "",
             "serial_id": serial_id or "",
             "email": email or "",
+            "signup_date": datetime.now().strftime("%Y-%m-%d"),  # Store signup date for new users
         }
         if isinstance(extra, dict):
             # Only include simple JSON-serializable values
@@ -183,13 +185,13 @@ class SignIn:
                 # Upload to cloud
                 result = cloud_uploader.upload_user_signup(user_data)
                 if result.get('status') == 'success':
-                    print(f"✅ User signup automatically uploaded to cloud")
+                    print(f" User signup automatically uploaded to cloud")
                 else:
-                    print(f"⚠️  Cloud upload failed: {result.get('message', 'Unknown error')}")
+                    print(f"  Cloud upload failed: {result.get('message', 'Unknown error')}")
             else:
-                print("ℹ️  Cloud not configured - user saved locally only")
+                print("  Cloud not configured - user saved locally only")
         except Exception as e:
-            print(f"⚠️  Cloud upload error: {e}")
+            print(f"  Cloud upload error: {e}")
             # Don't fail registration if cloud upload fails
         
         return True, "Registration successful."
