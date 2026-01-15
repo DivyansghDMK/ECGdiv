@@ -324,9 +324,9 @@ class DemoManager:
             try:
                 # Reset ECG test page metrics to zero
                 if hasattr(self.ecg_test_page, 'metric_labels'):
-                    self.ecg_test_page.metric_labels.get('heart_rate', QLabel()).setText("0")
-                    self.ecg_test_page.metric_labels.get('pr_interval', QLabel()).setText("0")
-                    self.ecg_test_page.metric_labels.get('qrs_duration', QLabel()).setText("0")
+                    self.ecg_test_page.metric_labels.get('heart_rate', QLabel()).setText("  0")
+                    self.ecg_test_page.metric_labels.get('pr_interval', QLabel()).setText("  0")
+                    self.ecg_test_page.metric_labels.get('qrs_duration', QLabel()).setText(" 0")
                     self.ecg_test_page.metric_labels.get('st_segment', QLabel()).setText("0")
                     if 'qtc_interval' in self.ecg_test_page.metric_labels:
                         self.ecg_test_page.metric_labels['qtc_interval'].setText("0/0")

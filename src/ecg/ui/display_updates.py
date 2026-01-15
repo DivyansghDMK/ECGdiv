@@ -34,15 +34,16 @@ def update_ecg_metrics_display(metric_labels: Dict, heart_rate: int, pr_interval
         
         if metric_labels:
             if 'heart_rate' in metric_labels:
-                metric_labels['heart_rate'].setText(f"{heart_rate} ")
+                # Fixed-width formatting (3 digits) to prevent text shifting
+                metric_labels['heart_rate'].setText(f"{heart_rate:3d}")
             if 'pr_interval' in metric_labels:
-                # Round to integer
+                # Round to integer and use fixed-width formatting (3 digits) to prevent text shifting
                 pr_val = int(round(pr_interval)) if isinstance(pr_interval, (int, float)) else pr_interval
-                metric_labels['pr_interval'].setText(f"{pr_val} ")
+                metric_labels['pr_interval'].setText(f"{pr_val:3d}")
             if 'qrs_duration' in metric_labels:
-                # Round to integer
+                # Round to integer and use fixed-width formatting (2 digits) to prevent text shifting
                 qrs_val = int(round(qrs_duration)) if isinstance(qrs_duration, (int, float)) else qrs_duration
-                metric_labels['qrs_duration'].setText(f"{qrs_val} ")
+                metric_labels['qrs_duration'].setText(f"{qrs_val:2d}")
             if 'st_interval' in metric_labels:
                 # P-wave duration: display in ms (replaces ST)
                 if isinstance(p_duration, (int, float)) and p_duration > 0:

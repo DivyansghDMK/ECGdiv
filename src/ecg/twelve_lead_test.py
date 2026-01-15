@@ -1623,12 +1623,23 @@ class ECGTestPage(QWidget):
         
         # Calculate BPM first (works with ≥2 beats) - needed for low BPM detection
         # This allows BPM calculation even when we don't have enough beats for median beat
+        # CRITICAL: Use most recent R-peaks for accurate BPM calculation (matches Fluke device)
         if len(r_peaks) >= 2:
+            # Calculate RR intervals from consecutive R-peaks
             rr_intervals_ms = np.diff(r_peaks) / fs * 1000.0
+            # Filter physiologically reasonable intervals (200-6000 ms = 10-300 BPM)
             valid_rr = rr_intervals_ms[(rr_intervals_ms >= 200) & (rr_intervals_ms <= 6000)]
             if len(valid_rr) > 0:
-                rr_ms = np.median(valid_rr)
+                # Use median for robustness, but prioritize recent intervals for accuracy
+                # Take last 5 RR intervals if available for more accurate current BPM
+                recent_rr = valid_rr[-5:] if len(valid_rr) > 5 else valid_rr
+                rr_ms = np.median(recent_rr)
                 estimated_bpm = 60000.0 / rr_ms if rr_ms > 0 else 60
+                # Validate BPM is reasonable (10-300 BPM)
+                if estimated_bpm < 10 or estimated_bpm > 300:
+                    # Fallback to median of all valid intervals if recent calculation is invalid
+                    rr_ms = np.median(valid_rr)
+                    estimated_bpm = 60000.0 / rr_ms if rr_ms > 0 else 60
             else:
                 estimated_bpm = 60
         else:
@@ -1651,7 +1662,9 @@ class ECGTestPage(QWidget):
         if len(r_peaks) < min_beats_for_bpm and len(self.data) > 3:
             lead_v2_data = self.data[3]  # V2 is typically index 3
             if len(lead_v2_data) > 100 and np.std(lead_v2_data) > 0.1:
-                filtered_v2 = filtfilt(b, a, lead_v2_data)
+                # Use display filter for R-peak detection on V2
+                from .signal_paths import display_filter
+                filtered_v2 = display_filter(lead_v2_data, fs)
                 signal_mean_v2 = np.mean(filtered_v2)
                 signal_std_v2 = np.std(filtered_v2)
                 
@@ -1719,8 +1732,10 @@ class ECGTestPage(QWidget):
             # Filter physiologically reasonable intervals (200-6000 ms = 10-300 BPM)
             valid_rr = rr_intervals_ms[(rr_intervals_ms >= 200) & (rr_intervals_ms <= 6000)]
             if len(valid_rr) > 0:
-                # Use median for robustness (rejects outliers)
-                rr_ms = float(np.median(valid_rr))
+                # Use recent RR intervals (last 5) for better accuracy matching Fluke device
+                # This ensures BPM reflects current heart rate, not historical average
+                recent_rr = valid_rr[-5:] if len(valid_rr) > 5 else valid_rr
+                rr_ms = float(np.median(recent_rr))
                 # Debug: Verify calculation at 100 BPM
                 if not hasattr(self, '_rr_debug_printed'):
                     self._rr_debug_printed = False
@@ -1778,13 +1793,15 @@ class ECGTestPage(QWidget):
         if not hasattr(self, '_hr_smooth_buffer_metrics'):
             self._hr_smooth_buffer_metrics = []
         
-        # Add current reading to buffer (larger buffer for better stability)
+        # Add current reading to buffer (optimized for accuracy and speed)
+        # Reduced buffer size for faster response while maintaining accuracy
         self._hr_smooth_buffer_metrics.append(heart_rate_raw)
-        if len(self._hr_smooth_buffer_metrics) > 20:  # Increased from 7 to 20 for maximum stability
+        if len(self._hr_smooth_buffer_metrics) > 10:  # Reduced from 20 to 10 for faster response
             self._hr_smooth_buffer_metrics.pop(0)
         
         # Use median of buffer for smoothing (rejects outliers)
-        if len(self._hr_smooth_buffer_metrics) >= 5:
+        # Calculate immediately with smaller buffer for faster updates
+        if len(self._hr_smooth_buffer_metrics) >= 2:  # Reduced to 2 for fastest initial response
             smoothed_hr = int(round(np.median(self._hr_smooth_buffer_metrics)))
         else:
             smoothed_hr = heart_rate_raw
@@ -1801,24 +1818,25 @@ class ECGTestPage(QWidget):
         # Calculate difference between smoothed and displayed value
         diff = abs(smoothed_hr - self._last_displayed_hr)
         
-        # STRICT DEAD ZONE: Only update if change is ≥2 BPM (prevents 99-101 flicker)
-        if diff < 2:
+        # OPTIMIZED DEAD ZONE: Update immediately for any change ≥1 BPM (for accuracy matching Fluke)
+        # Reduced dead zone from 2 BPM to 1 BPM for better accuracy
+        if diff < 1:
             # Change too small: Keep old value (prevents flickering)
             heart_rate = self._last_displayed_hr
             self._pending_hr_value = None
-        elif diff >= 2 and diff <= 5:
-            # Medium change (2-5 BPM): Update immediately (normal variability)
+        elif diff >= 1 and diff <= 5:
+            # Small to medium change (1-5 BPM): Update immediately (for accuracy)
             self._last_displayed_hr = smoothed_hr
             heart_rate = smoothed_hr
             self._pending_hr_value = None
         else:
             # Large change (>5 BPM): Use faster update for very large changes
-            import time
+            # Use module-level time import (already imported at top of file)
             current_time = time.time()
             
-            # For very large changes (>20 BPM), update immediately (no waiting)
-            # This ensures metrics update quickly when HR changes significantly
-            if diff > 20:
+            # For very large changes (>10 BPM), update immediately (no waiting) - reduced from 20 to 10
+            # This ensures metrics update quickly when HR changes significantly (within 6 seconds requirement)
+            if diff > 10:
                 # Very large change: Update immediately and force metric recalculation
                 self._last_displayed_hr = smoothed_hr
                 heart_rate = smoothed_hr
@@ -1840,8 +1858,8 @@ class ECGTestPage(QWidget):
                 # Allow small jitter (+/- 2 BPM) in the new target
                 if abs(smoothed_hr - self._pending_hr_value) <= 2:
                     # It's consistent. Check how long we've been waiting.
-                    # Reduced wait time: 2 seconds for medium changes (5-20 BPM)
-                    wait_time = 2.0 if diff <= 20 else 1.0
+                    # Reduced wait time: 0.5 seconds for medium changes (5-10 BPM) for faster updates within 6 seconds
+                    wait_time = 0.5 if diff <= 10 else 0.3
                     if current_time - self._pending_hr_start_time >= wait_time:
                         # Waited long enough! Jump to new value.
                         self._last_displayed_hr = smoothed_hr
@@ -3485,7 +3503,14 @@ class ECGTestPage(QWidget):
             lbl.setAlignment(Qt.AlignCenter)
             
             # Value label with specific colors - Make it smaller
-            val = QLabel(value)
+            # Use fixed-width initial values to prevent text shifting
+            if key == "pr_interval":
+                fixed_value = "  0"  # 3 digits for PR (e.g., "  0", "160", "200")
+            elif key == "qrs_duration":
+                fixed_value = " 0"  # 2 digits for QRS (e.g., " 0", "85", "90")
+            else:
+                fixed_value = value
+            val = QLabel(fixed_value)
             val.setFont(QFont("Arial", 32, QFont.Bold))
             val.setStyleSheet(f"color: #000000; background: transparent; padding: 0px;")
             val.setAlignment(Qt.AlignCenter)
@@ -3521,8 +3546,8 @@ class ECGTestPage(QWidget):
         hr_title.setStyleSheet("color: #ff0000; margin-bottom: 2px; font-weight: bold;")
         hr_title.setAlignment(Qt.AlignCenter)
         
-        # Heart rate value (red color)
-        heart_rate_val = QLabel("00")
+        # Heart rate value (red color) - use fixed-width initial value
+        heart_rate_val = QLabel("  0")
         heart_rate_val.setFont(QFont("Arial", 32, QFont.Bold))
         heart_rate_val.setStyleSheet("color: #ff0000; background: transparent; padding: 0px;")
         heart_rate_val.setAlignment(Qt.AlignCenter)
@@ -3541,19 +3566,19 @@ class ECGTestPage(QWidget):
 
     def update_ecg_metrics_on_top_of_lead_graphs(self, intervals):
         if 'Heart_Rate' in intervals and intervals['Heart_Rate'] is not None:
-            self.metric_labels['heart_rate'].setText(
-                f"{int(round(intervals['Heart_Rate']))}" if isinstance(intervals['Heart_Rate'], (int, float)) else str(intervals['Heart_Rate'])
-            )
+            # Fixed-width formatting (3 digits) to prevent text shifting
+            hr_val = int(round(intervals['Heart_Rate'])) if isinstance(intervals['Heart_Rate'], (int, float)) else int(intervals['Heart_Rate']) if str(intervals['Heart_Rate']).isdigit() else 0
+            self.metric_labels['heart_rate'].setText(f"{hr_val:3d}")
         
         if 'PR' in intervals and intervals['PR'] is not None:
-            self.metric_labels['pr_interval'].setText(
-                f"{int(round(intervals['PR']))}" if isinstance(intervals['PR'], (int, float)) else str(intervals['PR'])
-            )
+            # Fixed-width formatting (3 digits) to prevent text shifting
+            pr_val = int(round(intervals['PR'])) if isinstance(intervals['PR'], (int, float)) else int(intervals['PR']) if str(intervals['PR']).isdigit() else 0
+            self.metric_labels['pr_interval'].setText(f"{pr_val:3d}")
         
         if 'QRS' in intervals and intervals['QRS'] is not None:
-            self.metric_labels['qrs_duration'].setText(
-                f"{int(round(intervals['QRS']))}" if isinstance(intervals['QRS'], (int, float)) else str(intervals['QRS'])
-            )
+            # Fixed-width formatting (2 digits) to prevent text shifting
+            qrs_val = int(round(intervals['QRS'])) if isinstance(intervals['QRS'], (int, float)) else int(intervals['QRS']) if str(intervals['QRS']).isdigit() else 0
+            self.metric_labels['qrs_duration'].setText(f"{qrs_val:2d}")
         
         if 'ST' in intervals and intervals['ST'] is not None:
             self.metric_labels['st_interval'].setText(
@@ -3719,12 +3744,13 @@ class ECGTestPage(QWidget):
         """Reset all ECG metric labels to zero/initial state."""
         try:
             if hasattr(self, 'metric_labels') and isinstance(self.metric_labels, dict):
+                # Use fixed-width formatting to prevent text shifting
                 if 'heart_rate' in self.metric_labels:
-                    self.metric_labels['heart_rate'].setText("00")
+                    self.metric_labels['heart_rate'].setText("  0")  # 3 digits
                 if 'pr_interval' in self.metric_labels:
-                    self.metric_labels['pr_interval'].setText("0")
+                    self.metric_labels['pr_interval'].setText("  0")  # 3 digits
                 if 'qrs_duration' in self.metric_labels:
-                    self.metric_labels['qrs_duration'].setText("0")
+                    self.metric_labels['qrs_duration'].setText(" 0")  # 2 digits
                 if 'st_interval' in self.metric_labels:
                     self.metric_labels['st_interval'].setText("0")
                 if 'qtc_interval' in self.metric_labels:
@@ -3744,7 +3770,8 @@ class ECGTestPage(QWidget):
             # Demo mode is active - set fixed demo values instead of resetting to zero
             print(" Page shown with demo mode active - setting fixed demo values")
             if hasattr(self, 'metric_labels'):
-                self.metric_labels.get('heart_rate', QLabel()).setText("60")
+                # Use fixed-width formatting to prevent text shifting
+                self.metric_labels.get('heart_rate', QLabel()).setText(" 60")
                 self.metric_labels.get('pr_interval', QLabel()).setText("160")
                 self.metric_labels.get('qrs_duration', QLabel()).setText("85")
                 self.metric_labels.get('st_interval', QLabel()).setText("0")
@@ -7490,13 +7517,15 @@ class ECGTestPage(QWidget):
                 last_calculated_bpm = getattr(self, '_last_calculated_bpm', current_bpm)
                 bpm_change = abs(current_bpm - last_calculated_bpm) if current_bpm > 0 and last_calculated_bpm > 0 else 0
                 
-                # Calculate immediately for first 20 updates (ensures values appear within 10 seconds)
-                # Also calculate immediately if BPM changed significantly (>10 BPM)
-                # After that, calculate every 2 updates (was 3) for faster response
+                # Calculate immediately for first 6 seconds (ensures values appear within 6 seconds as requested)
+                # At 500 Hz with ~10 samples per update, 6 seconds = ~300 updates
+                # Also calculate immediately if BPM changed significantly (>5 BPM)
+                # After that, calculate every update for maximum responsiveness
+                updates_in_6_seconds = 300  # ~6 seconds at 500 Hz
                 should_calculate = (
-                    (self._metrics_update_count <= 20) or  # First 20 updates
-                    (bpm_change > 10) or  # Large BPM change - force immediate recalculation
-                    (self.update_count % 2 == 0)  # Every 2 updates (was 3) for faster response
+                    (self.update_count <= updates_in_6_seconds) or  # First 6 seconds: calculate every update
+                    (bpm_change > 5) or  # BPM change >5: force immediate recalculation
+                    (self.update_count % 1 == 0)  # Every update for maximum responsiveness
                 )
                 
                 if should_calculate:

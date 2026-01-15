@@ -2037,17 +2037,23 @@ class Dashboard(QWidget):
             if 'heart_rate' in ecg_metrics:
                 hr_val = ecg_metrics['heart_rate']
                 if hr_val in (None, "", "--"):
-                    self.metric_labels['heart_rate'].setText("0 BPM")
+                    self.metric_labels['heart_rate'].setText("  0 BPM")
                 else:
-                    self.metric_labels['heart_rate'].setText(f"{hr_val} BPM")
+                    # Use fixed-width formatting to prevent text shifting
+                    hr_int = int(hr_val) if str(hr_val).isdigit() else 0
+                    self.metric_labels['heart_rate'].setText(f"{hr_int:3d} BPM")
             
-            # Update PR Interval
+            # Update PR Interval - use fixed-width formatting
             if 'pr_interval' in ecg_metrics:
-                self.metric_labels['pr_interval'].setText(f"{ecg_metrics['pr_interval']} ms")
+                pr_val = ecg_metrics['pr_interval']
+                pr_int = int(pr_val) if str(pr_val).isdigit() else 0
+                self.metric_labels['pr_interval'].setText(f"{pr_int:3d} ms")
             
-            # Update QRS Duration
+            # Update QRS Duration - use fixed-width formatting
             if 'qrs_duration' in ecg_metrics:
-                self.metric_labels['qrs_duration'].setText(f"{ecg_metrics['qrs_duration']} ms")
+                qrs_val = ecg_metrics['qrs_duration']
+                qrs_int = int(qrs_val) if str(qrs_val).isdigit() else 0
+                self.metric_labels['qrs_duration'].setText(f"{qrs_int:2d} ms")
             
             # Update ST Interval
             if 'st_interval' in ecg_metrics:
@@ -2289,17 +2295,17 @@ class Dashboard(QWidget):
         if _time.time() - self._last_metrics_update_ts < 3.0:
             return
         if 'Heart_Rate' in intervals and intervals['Heart_Rate'] is not None:
-            self.metric_labels['heart_rate'].setText(
-                f"{int(round(intervals['Heart_Rate']))} bpm" if isinstance(intervals['Heart_Rate'], (int, float)) else str(intervals['Heart_Rate'])
-            )
+            # Use fixed-width formatting to prevent text shifting
+            hr_val = int(round(intervals['Heart_Rate'])) if isinstance(intervals['Heart_Rate'], (int, float)) else int(intervals['Heart_Rate']) if str(intervals['Heart_Rate']).isdigit() else 0
+            self.metric_labels['heart_rate'].setText(f"{hr_val:3d} bpm")
         if 'PR' in intervals and intervals['PR'] is not None:
-            self.metric_labels['pr_interval'].setText(
-                f"{int(round(intervals['PR']))} ms" if isinstance(intervals['PR'], (int, float)) else str(intervals['PR'])
-            )
+            # Use fixed-width formatting to prevent text shifting
+            pr_val = int(round(intervals['PR'])) if isinstance(intervals['PR'], (int, float)) else int(intervals['PR']) if str(intervals['PR']).isdigit() else 0
+            self.metric_labels['pr_interval'].setText(f"{pr_val:3d} ms")
         if 'QRS' in intervals and intervals['QRS'] is not None:
-            self.metric_labels['qrs_duration'].setText(
-                f"{int(round(intervals['QRS']))} ms" if isinstance(intervals['QRS'], (int, float)) else str(intervals['QRS'])
-            )
+            # Use fixed-width formatting to prevent text shifting
+            qrs_val = int(round(intervals['QRS'])) if isinstance(intervals['QRS'], (int, float)) else int(intervals['QRS']) if str(intervals['QRS']).isdigit() else 0
+            self.metric_labels['qrs_duration'].setText(f"{qrs_val:2d} ms")
         # QTc label may not exist in current metrics card; update only if present
         # Check for 'QTc_interval' first (demo mode sends this as "400/430")
         if 'QTc_interval' in intervals and intervals['QTc_interval'] is not None and 'qtc_interval' in self.metric_labels:
@@ -2348,23 +2354,36 @@ class Dashboard(QWidget):
                 
             # Force sync metric values from dashboard to ECG test page
             # Extract numeric values from dashboard labels (e.g., "100 BPM" -> "100")
+            # Use fixed-width formatting to prevent text shifting
             if 'heart_rate' in self.metric_labels and 'heart_rate' in self.ecg_test_page.metric_labels:
                 hr_text = self.metric_labels['heart_rate'].text()
                 hr_value = hr_text.split()[0] if ' ' in hr_text else hr_text
-                self.ecg_test_page.metric_labels['heart_rate'].setText(hr_value)
+                try:
+                    hr_int = int(hr_value)
+                    self.ecg_test_page.metric_labels['heart_rate'].setText(f"{hr_int:3d}")
+                except (ValueError, TypeError):
+                    self.ecg_test_page.metric_labels['heart_rate'].setText(hr_value)
                 print(f"  HR: {hr_value}")
                 
             if 'pr_interval' in self.metric_labels and 'pr_interval' in self.ecg_test_page.metric_labels:
                 pr_text = self.metric_labels['pr_interval'].text()
                 pr_value = pr_text.split()[0] if ' ' in pr_text else pr_text
-                self.ecg_test_page.metric_labels['pr_interval'].setText(pr_value)
+                try:
+                    pr_int = int(pr_value)
+                    self.ecg_test_page.metric_labels['pr_interval'].setText(f"{pr_int:3d}")
+                except (ValueError, TypeError):
+                    self.ecg_test_page.metric_labels['pr_interval'].setText(pr_value)
                 print(f"  PR: {pr_value}")
                 
             if 'qrs_duration' in self.metric_labels and 'qrs_duration' in self.ecg_test_page.metric_labels:
                 qrs_text = self.metric_labels['qrs_duration'].text()
                 qrs_value = qrs_text.split()[0] if ' ' in qrs_text else qrs_text
+                try:
+                    qrs_int = int(qrs_value)
+                    self.ecg_test_page.metric_labels['qrs_duration'].setText(f"{qrs_int:2d}")
+                except (ValueError, TypeError):
+                    self.ecg_test_page.metric_labels['qrs_duration'].setText(qrs_value)
                 print(f"🔍 DEBUG SYNC: Dashboard QRS text: '{qrs_text}' -> value: '{qrs_value}'")
-                self.ecg_test_page.metric_labels['qrs_duration'].setText(qrs_value)
                 print(f"🔍 DEBUG SYNC: Set ECG page QRS to: '{qrs_value}'")
                 print(f"  QRS: {qrs_value}")
                 
@@ -2450,15 +2469,21 @@ class Dashboard(QWidget):
                     # Update dashboard with demo values
                     hr_text = ecg_metrics.get('heart_rate', '--')
                     if hr_text and hr_text not in ('--', '00', '0'):
-                        self.metric_labels['heart_rate'].setText(f"{hr_text} BPM")
+                        # Use fixed-width formatting to prevent text shifting
+                        hr_int = int(hr_text) if str(hr_text).isdigit() else 0
+                        self.metric_labels['heart_rate'].setText(f"{hr_int:3d} BPM")
                     
                     pr_text = ecg_metrics.get('pr_interval', '--')
                     if pr_text and pr_text not in ('--', '00', '0'):
-                        self.metric_labels['pr_interval'].setText(f"{pr_text} ms")
+                        # Use fixed-width formatting to prevent text shifting
+                        pr_int = int(pr_text) if str(pr_text).isdigit() else 0
+                        self.metric_labels['pr_interval'].setText(f"{pr_int:3d} ms")
                     
                     qrs_text = ecg_metrics.get('qrs_duration', '--')
                     if qrs_text and qrs_text not in ('--', '00', '0'):
-                        self.metric_labels['qrs_duration'].setText(f"{qrs_text} ms")
+                        # Use fixed-width formatting to prevent text shifting
+                        qrs_int = int(qrs_text) if str(qrs_text).isdigit() else 0
+                        self.metric_labels['qrs_duration'].setText(f"{qrs_int:2d} ms")
                     
                     qtc_text = ecg_metrics.get('qtc_interval', '--')
                     if qtc_text and qtc_text not in ('--', '00', '0'):
@@ -2497,14 +2522,13 @@ class Dashboard(QWidget):
                     p_int = int(round(p_duration)) if p_duration > 0 else 0
                     
                     # Update dashboard labels with clinical-grade values
+                    # Use fixed-width formatting to prevent text shifting
                     if hr_val > 0:
-                        self.metric_labels['heart_rate'].setText(f"{int(round(hr_val))} BPM")
-                    
+                        self.metric_labels['heart_rate'].setText(f"{hr_int:3d} BPM")
                     if pr_int > 0:
-                        self.metric_labels['pr_interval'].setText(f"{pr_int} ms")
-                    
+                        self.metric_labels['pr_interval'].setText(f"{pr_int:3d} ms")
                     if qrs_int > 0:
-                        self.metric_labels['qrs_duration'].setText(f"{qrs_int} ms")
+                        self.metric_labels['qrs_duration'].setText(f"{qrs_int:2d} ms")
                     
                     if qt_int > 0 and qtc_int > 0:
                         self.metric_labels['qtc_interval'].setText(f"{qt_int}/{qtc_int} ms")
