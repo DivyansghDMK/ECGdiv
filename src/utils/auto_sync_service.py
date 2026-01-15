@@ -13,9 +13,9 @@ from typing import Set, Dict, List
 
 
 class AutoSyncService:
-    """Background service that automatically syncs files to cloud every 5 seconds"""
+    """Background service that automatically syncs files to cloud every 15 seconds"""
     
-    def __init__(self, interval_seconds=5):
+    def __init__(self, interval_seconds=15):
         self.interval = interval_seconds
         self.running = False
         self.thread = None
@@ -266,8 +266,8 @@ class AutoSyncService:
 _auto_sync_service = None
 
 
-def get_auto_sync_service(interval_seconds=5) -> AutoSyncService:
-    """Get or create the global auto-sync service instance"""
+def get_auto_sync_service(interval_seconds=15) -> AutoSyncService:
+    """Get or create global auto-sync service instance"""
     global _auto_sync_service
     
     if _auto_sync_service is None:
@@ -276,14 +276,15 @@ def get_auto_sync_service(interval_seconds=5) -> AutoSyncService:
     return _auto_sync_service
 
 
-def start_auto_sync(interval_seconds=5):
-    """Start the automatic background sync service"""
+def start_auto_sync(interval_seconds=15):
+    """Start automatic background sync service"""
     service = get_auto_sync_service(interval_seconds)
     service.start()
     return service
 
 
 def stop_auto_sync():
+    """Stop automatic background sync service"""
     """Stop the automatic background sync service"""
     global _auto_sync_service
     

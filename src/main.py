@@ -1,8 +1,3 @@
-"""
-ECG Monitor Application - Main Entry Point
-A comprehensive ECG monitoring application with real-time analysis and visualization.
-"""
-    
 import sys
 import os
 import json

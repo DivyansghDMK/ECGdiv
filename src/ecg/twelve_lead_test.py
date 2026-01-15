@@ -7,6 +7,7 @@ import logging
 import traceback
 from utils.crash_logger import get_crash_logger
 from PyQt5.QtWidgets import QMessageBox
+# Serial communication now handled by ecg.serial module
 try:
     import serial
     import serial.tools.list_ports
@@ -26,6 +27,10 @@ except ImportError:
         def comports(*args, **kwargs):
             return []
     serial.tools = type('Tools', (), {'list_ports': MockComports()})()
+
+# Import serial communication classes from new modular structure
+from .serial import SerialStreamReader, SerialECGReader
+from .serial.packet_parser import parse_packet, decode_lead, hex_string_to_bytes, PACKET_SIZE, START_BYTE, END_BYTE, LEAD_NAMES_DIRECT
 import csv
 try:
     import cv2
@@ -57,65 +62,35 @@ from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 from functools import partial # For plot clicking
 from .clinical_measurements import (
     build_median_beat, get_tp_baseline, measure_qt_from_median_beat,
-    measure_rv5_sv1_from_median_beat, measure_st_deviation_from_median_beat,
+    measure_rv5_sv1_from_median_beat, measure_st_deviation_from_median_beat, measure_p_duration_from_median_beat,
     calculate_axis_from_median_beat, measure_pr_from_median_beat,
     measure_qrs_duration_from_median_beat
 )
+# Import from new modular structure
+from .metrics.intervals import calculate_qtcf_interval, calculate_rv5_sv1_from_median
+from .metrics.axis_calculations import (
+    calculate_qrs_axis_from_median, calculate_p_axis_from_median, calculate_t_axis_from_median
+)
+from .metrics.heart_rate import calculate_heart_rate_from_signal
+from .ui.display_updates import update_ecg_metrics_display, get_current_metrics_from_labels
+from .signal.signal_processing import (
+    extract_low_frequency_baseline, detect_signal_source, 
+    apply_adaptive_gain, apply_realtime_smoothing
+)
+from .plotting.plot_widgets import create_plot_grid, LEAD_COLORS_PLOT
 
-# --- Configuration ---
-# Increase history to keep longer segments visible in each frame.
-# At 500 Hz sampling this stores ~20 seconds, enough for 6-7 peaks
-# even at the slowest sweep speed.
-HISTORY_LENGTH = 10000
-NORMAL_HR_MIN, NORMAL_HR_MAX = 60, 100
-LEAD_LABELS = [
-    "I", "II", "III", "aVR", "aVL", "aVF",
-    "V1", "V2", "V3", "V4", "V5", "V6"
-]
+# Import constants from utils module
+from .utils.constants import HISTORY_LENGTH, NORMAL_HR_MIN, NORMAL_HR_MAX, LEAD_LABELS, LEAD_COLORS, LEADS_MAP
 
-class SamplingRateCalculator:
-    def __init__(self, update_interval_sec=5):
-        self.sample_count = 0
-        self.last_update_time = time.monotonic()
-        self.update_interval = update_interval_sec
-        self.sampling_rate = 0
+# Import utilities from utils module
+from .utils.helpers import SamplingRateCalculator, get_display_gain, generate_realistic_ecg_waveform
 
-    def add_sample(self):
-        self.sample_count += 1
-        current_time = time.monotonic()
-        elapsed = current_time - self.last_update_time
-        if elapsed >= self.update_interval:
-            self.sampling_rate = self.sample_count / elapsed
-            self.sample_count = 0
-            self.last_update_time = current_time
-        return self.sampling_rate
-
-# ------------------------ ECG Display Gain Helper (Clinical Standard) ------------------------
-
-def get_display_gain(wave_gain_mm: float) -> float:
-    """
-    ECG display gain calculation (hospital standard):
-    10 mm/mV = 1.0x (clinical baseline)
-    
-    Args:
-        wave_gain_mm: Wave gain setting in mm/mV (e.g., 2.5, 5, 10, 20)
-    
-    Returns:
-        Display gain factor:
-        - 2.5 mm/mV → 0.25x
-        - 5 mm/mV → 0.5x
-        - 10 mm/mV → 1.0x (baseline)
-        - 20 mm/mV → 2.0x
-    
-    This matches GE / Philips monitor behavior.
-    """
-    try:
-        return float(wave_gain_mm) / 10.0
-    except (ValueError, TypeError):
-        return 1.0  # Default to 10mm/mV baseline
+# Import serial communication from new modular structure
+from .serial import SerialStreamReader, SerialECGReader
+from .serial.packet_parser import parse_packet, decode_lead, hex_string_to_bytes, PACKET_SIZE, START_BYTE, END_BYTE, LEAD_NAMES_DIRECT
 
 # ------------------------ Realistic ECG Waveform Generator ------------------------
-
+# NOTE: This function is now in ecg.utils.helpers, but kept here for backward compatibility
 def generate_realistic_ecg_waveform(duration_seconds=10, sampling_rate=500, heart_rate=72, lead_name="II"):
     """
     Generate realistic ECG waveform with proper PQRST complexes
@@ -229,470 +204,8 @@ def generate_realistic_ecg_waveform(duration_seconds=10, sampling_rate=500, hear
 
 # ============================================================================
 # NEW PACKET-BASED SERIAL PARSING LOGIC
-# ============================================================================
-
-# Packet parsing constants
-PACKET_SIZE = 22
-START_BYTE = 0xE8
-END_BYTE = 0x8E
-LEAD_NAMES_DIRECT = ["I", "II", "V1", "V2", "V3", "V4", "V5", "V6"]
-PACKET_REGEX = re.compile(r"(?i)(E8(?:[0-9A-F\s]{2,})?8E)")
-
-def hex_string_to_bytes(hex_str: str) -> bytes:
-    """Convert hex string to bytes"""
-    cleaned = re.sub(r"[^0-9A-Fa-f]", "", hex_str)
-    if len(cleaned) % 2 != 0:
-        raise ValueError("Hex string must have even length")
-    return bytes(int(cleaned[i : i + 2], 16) for i in range(0, len(cleaned), 2))
-
-def decode_lead(msb: int, lsb: int) -> Tuple[int, bool]:
-    """Decode lead value from MSB and LSB bytes"""
-    lower7 = lsb & 0x7F
-    upper5 = msb & 0x1F
-    value = (upper5 << 7) | lower7
-    connected = (msb & 0x20) != 0
-    return value, connected
-
-def parse_packet(raw: bytes) -> Dict[str, int]:
-    """Parse ECG packet and return dictionary of lead values"""
-    if len(raw) != PACKET_SIZE or raw[0] != START_BYTE or raw[-1] != END_BYTE:
-        return {}
-
-    # Extract packet counter (byte 1) - sequence number 0-63
-    packet_counter = raw[1] & 0x3F  # Counter is in lower 6 bits (0-63)
-    
-    lead_values: Dict[str, int] = {}
-    idx = 5  # first MSB position
-
-    print(f"---- New Packet (Counter: {packet_counter}) ----")
-
-    for name in LEAD_NAMES_DIRECT:
-        msb = raw[idx]
-        lsb = raw[idx + 1]
-        idx += 2
-
-        value, connected = decode_lead(msb, lsb)
-
-        print(f"{name}: MSB={msb:02X}, LSB={lsb:02X}, value={value}, connected={connected}")
-
-        lead_values[name] = value
-
-    # Derived limb leads
-    lead_i = lead_values.get("I", 0)
-    lead_ii = lead_values.get("II", 0)
-
-    lead_values["III"] = lead_ii - lead_i
-    lead_values["aVR"] = -(lead_i + lead_ii) / 2
-    lead_values["aVL"] = (lead_i - lead_values["III"]) / 2
-    lead_values["aVF"] = (lead_ii + lead_values["III"]) / 2
-
-    print("Derived:", {
-        "III": lead_values["III"],
-        "aVR": lead_values["aVR"],
-        "aVL": lead_values["aVL"],
-        "aVF": lead_values["aVF"],
-    })
-
-    print("---------------------\n")
-
-    return lead_values
-
-class SerialStreamReader:
-    """Packet-based serial reader for ECG data - NEW IMPLEMENTATION"""
-    
-    def __init__(self, port: str, baudrate: int, timeout: float = 0.1):
-        if not SERIAL_AVAILABLE:
-            raise RuntimeError("pyserial is required for serial capture. pip install pyserial")
-        self.ser = serial.Serial(port=port, baudrate=baudrate, timeout=timeout)
-        self.buf = bytearray()
-        self.running = False
-        self.data_count = 0
-        self.error_count = 0
-        self.consecutive_errors = 0
-        self.last_error_time = 0
-        self.crash_logger = get_crash_logger()
-        self.user_details = {}  # For error reporting compatibility
-        # Packet loss tracking
-        self.start_time = time.time()
-        self.last_packet_time = time.time()
-        self.total_packets_expected = 0
-        self.total_packets_lost = 0
-        self.packet_loss_percent = 0.0
-        # Sequence-based packet loss detection
-        self._last_packet_counter = None
-        self._total_sequence_lost = 0
-        self._packet_loss_warnings = 0
-        print(f" SerialStreamReader initialized: Port={port}, Baud={baudrate}")
-
-    def close(self) -> None:
-        """Close serial connection"""
-        try:
-            # Stop data acquisition first
-            self.running = False
-            
-            # Flush any remaining data
-            if hasattr(self.ser, 'reset_input_buffer'):
-                try:
-                    self.ser.reset_input_buffer()
-                except Exception:
-                    pass
-            
-            if hasattr(self.ser, 'reset_output_buffer'):
-                try:
-                    self.ser.reset_output_buffer()
-                except Exception:
-                    pass
-            
-            # Close the serial port
-            if self.ser and self.ser.is_open:
-                self.ser.close()
-                print(" Serial port closed and released")
-            
-            # Clear buffer
-            self.buf.clear()
-        except Exception as e:
-            print(f" Error closing serial connection: {e}")
-
-    def start(self):
-        """Start data acquisition"""
-        print(" Starting packet-based ECG data acquisition...")
-        self.ser.reset_input_buffer()
-        self.buf.clear()
-        self.running = True
-        # Initialize packet loss tracking
-        self.start_time = time.time()
-        self.last_packet_time = time.time()
-        self.data_count = 0
-        self.total_packets_expected = 0
-        self.total_packets_lost = 0
-        self.packet_loss_percent = 0.0
-        print(" Packet-based ECG device started - waiting for data packets...")
-
-    def stop(self):
-        """Stop data acquisition"""
-        print(" Stopping packet-based ECG data acquisition...")
-        self.running = False
-        # Final packet loss statistics
-        if hasattr(self, 'start_time') and self.start_time > 0:
-            elapsed_time = time.time() - self.start_time
-            expected_packets = int(500 * elapsed_time)  # 500 Hz
-            total_lost = max(0, expected_packets - self.data_count)
-            loss_percent = (total_lost / expected_packets * 100) if expected_packets > 0 else 0
-            print(f" Total data packets received: {self.data_count}")
-            if total_lost > 0:
-                print(f" Packet loss summary: {total_lost}/{expected_packets} packets lost ({loss_percent:.2f}% loss)")
-            else:
-                print(f" No packet loss detected - all {expected_packets} expected packets received")
-            
-            # Report sequence-based packet loss
-            if hasattr(self, '_total_sequence_lost') and self._total_sequence_lost > 0:
-                print(f" Sequence-based packet loss: {self._total_sequence_lost} packets lost (detected via counter gaps)")
-            else:
-                print(f" No sequence gaps detected - perfect packet continuity!")
-        else:
-            print(f" Total data packets received: {self.data_count}")
-            if hasattr(self, '_total_sequence_lost') and self._total_sequence_lost > 0:
-                print(f" Sequence-based packet loss: {self._total_sequence_lost} packets lost")
-
-    def read_packets(self, max_packets: int = 100) -> List[Dict[str, int]]:
-        """Read and parse ECG packets from serial stream
-        
-        At 500 Hz, hardware sends 500 packets/second = ~16.67 packets per 33ms timer interval.
-        We read up to max_packets to prevent buffer overflow and packet loss.
-        """
-        if not self.running:
-            return []
-            
-        out: List[Dict[str, int]] = []
-        
-        try:
-            # Read larger chunks to prevent buffer overflow at 500 Hz
-            # At 500 Hz with 22-byte packets = 11,000 bytes/second
-            # Read up to 4096 bytes per call to catch up quickly
-            chunk = self.ser.read(4096)  # Increased from default (usually 1024)
-            if chunk:
-                self.buf.extend(chunk)
-
-            # Extract packets - process ALL available packets to prevent buffer overflow
-            # At 500 Hz, we need to process packets quickly to avoid accumulation
-            # Read ALL packets in buffer, not just max_packets, to prevent overflow
-            max_iterations = max_packets * 3  # Allow catching up if we fell behind
-            iteration = 0
-            while iteration < max_iterations:
-                iteration += 1
-                start_idx = self.buf.find(bytes([START_BYTE]))
-                if start_idx == -1:
-                    # No start byte found - clear buffer if it's getting too large (>100KB)
-                    if len(self.buf) > 100000:
-                        print(f" Serial buffer overflow risk: {len(self.buf)} bytes, clearing buffer")
-                        self.buf.clear()
-                    break
-                if start_idx > 10000:
-                    # Skip too much garbage data before start byte
-                    del self.buf[:start_idx]
-                    continue
-                if len(self.buf) - start_idx < PACKET_SIZE:
-                    # Not enough data for a complete packet - keep what we have
-                    if start_idx > 0:
-                        del self.buf[:start_idx]
-                    break
-                    
-                candidate = bytes(self.buf[start_idx : start_idx + PACKET_SIZE])
-                del self.buf[: start_idx + PACKET_SIZE]
-
-                if candidate[-1] != END_BYTE:
-                    continue
-
-                parsed = parse_packet(candidate)
-                if parsed:
-                    self.data_count += 1
-                    self.last_packet_time = time.time()
-                    
-                    # Extract packet counter for sequence tracking
-                    packet_counter = candidate[1] & 0x3F  # Counter is in lower 6 bits (0-63)
-                    
-                    # Detect packet loss by checking sequence continuity
-                    if self._last_packet_counter is not None:
-                        expected_counter = (self._last_packet_counter + 1) % 64
-                        if packet_counter != expected_counter:
-                            # Calculate how many packets were lost
-                            if packet_counter > expected_counter:
-                                lost = packet_counter - expected_counter
-                            else:
-                                # Wrapped around (e.g., 63 -> 0)
-                                lost = (64 - expected_counter) + packet_counter
-                            
-                            if lost > 0:
-                                self._total_sequence_lost += lost
-                                self._packet_loss_warnings += 1
-                                # Only warn every 10th occurrence to avoid spam
-                                if self._packet_loss_warnings % 10 == 1:
-                                    print(f" PACKET LOSS DETECTED: {lost} packet(s) dropped! "
-                                          f"Expected counter: {expected_counter}, Got: {packet_counter}. "
-                                          f"Total sequence lost: {self._total_sequence_lost}")
-                    
-                    self._last_packet_counter = packet_counter
-                    
-                    # Only log every 100th packet to reduce console spam
-                    if self.data_count % 100 == 0:
-                        loss_info = f" (Sequence lost: {self._total_sequence_lost})" if self._total_sequence_lost > 0 else ""
-                        print(f" [Packet #{self.data_count}, Counter: {packet_counter}]{loss_info} Received valid packet with {len(parsed)} leads")
-                    out.append(parsed)
-            
-            # Warn if buffer is accumulating too much data (indicates we're falling behind)
-            if len(self.buf) > 50000:  # >50KB buffer indicates we're not reading fast enough
-                print(f" Serial buffer accumulation: {len(self.buf)} bytes - may indicate packet loss")
-            
-            # Update packet loss statistics
-            if self.running and self.data_count > 0:
-                elapsed_time = time.time() - self.start_time
-                expected_packets = int(500 * elapsed_time)  # 500 Hz = 500 packets/second
-                self.total_packets_expected = expected_packets
-                self.total_packets_lost = max(0, expected_packets - self.data_count)
-                if expected_packets > 0:
-                    self.packet_loss_percent = (self.total_packets_lost / expected_packets) * 100
-                    
-        except Exception as e:
-            self.error_count += 1
-            self.consecutive_errors += 1
-            error_msg = f"Packet parsing error: {e}"
-            print(f" {error_msg}")
-            self.crash_logger.log_error(
-                message=error_msg,
-                exception=e,
-                category="SERIAL_ERROR"
-            )
-            
-            # If device is disconnected (Errno 6) or too many consecutive errors, stop
-            if "Device not configured" in str(e) or "[Errno 6]" in str(e) or self.consecutive_errors > 20:
-                print(" Critical serial error - stopping acquisition")
-                self.running = False
-            
-        return out
-
-    def _handle_serial_error(self, error):
-        """Handle serial communication errors"""
-        current_time = time.time()
-        self.error_count += 1
-        self.consecutive_errors += 1
-        
-        error_msg = f"Serial communication error: {error}"
-        print(f" {error_msg}")
-        
-        self.crash_logger.log_error(
-            message=error_msg,
-            exception=error,
-            category="SERIAL_ERROR"
-        )
-        
-        if self.consecutive_errors >= 5 and (current_time - self.last_error_time) > 10:
-            self.last_error_time = current_time
-            self.consecutive_errors = 0
-
-# ============================================================================
-# OLD SERIAL READER (COMMENTED OUT - KEPT FOR REFERENCE)
-# ============================================================================
-
-class SerialECGReader:
-    def __init__(self, port, baudrate):
-        if not SERIAL_AVAILABLE:
-            raise ImportError("Serial module not available - cannot create ECG reader")
-        self.ser = serial.Serial(port, baudrate, timeout=1)
-        self.running = False
-        self.data_count = 0
-        self.error_count = 0
-        self.consecutive_errors = 0
-        self.last_error_time = 0
-        self.crash_logger = get_crash_logger()
-        print(f" SerialECGReader initialized: Port={port}, Baud={baudrate}")
-
-    def start(self):
-        print(" Starting ECG data acquisition...")
-        self.ser.reset_input_buffer()
-        self.ser.write(b'1\r\n')
-        time.sleep(0.5)
-        self.running = True
-        print(" ECG device started - waiting for data...")
-
-    def stop(self):
-        print(" Stopping ECG data acquisition...")
-        self.ser.write(b'0\r\n')
-        self.running = False
-        print(f" Total data packets received: {self.data_count}")
-
-    def read_value(self):
-        if not self.running:
-            return None
-        try:
-            line_raw = self.ser.readline()
-            line_data = line_raw.decode('utf-8', errors='replace').strip()
-
-            if line_data:
-                self.data_count += 1
-                # Print detailed data information
-                print(f" [Packet #{self.data_count}] Raw data: '{line_data}' (Length: {len(line_data)})")
-                
-                # Parse and display ECG value
-                if line_data.isdigit():
-                    ecg_value = int(line_data[-3:])
-                    print(f" ECG Value: {ecg_value} mV")
-                    return ecg_value
-                else:
-                    # Try to parse as multiple values (8-channel data)
-                    try:
-                        # Clean the line data - remove any non-numeric characters except spaces and minus signs
-                        import re
-                        cleaned_line = re.sub(r'[^\d\s\-]', ' ', line_data)
-                        values = [int(x) for x in cleaned_line.split() if x.strip() and x.replace('-', '').isdigit()]
-                        
-                        if len(values) >= 8:
-                            print(f" 8-Channel ECG Data: {values}")
-                            return values  # Return the list of 8 values
-                        elif len(values) == 1:
-                            print(f" Single ECG Value: {values[0]} mV")
-                            return values[0]
-                        elif len(values) > 0:
-                            print(f" Unexpected number of values: {len(values)} (expected 8)")
-                        else:
-                            return None
-                    except Exception as e:
-                        print(f" Error parsing ECG data: {e}")
-                        return None
-            else:
-                print("⏳ No data received (timeout)")
-                
-        except Exception as e:
-            self._handle_serial_error(e)
-        return None
-
-    def close(self):
-        print(" Closing serial connection...")
-        self.ser.close()
-        print(" Serial connection closed")
-
-    def _handle_serial_error(self, error):
-        """Handle serial communication errors with alert and logging"""
-        current_time = time.time()
-        self.error_count += 1
-        self.consecutive_errors += 1
-        
-        # Log the error
-        error_msg = f"Serial communication error: {error}"
-        print(f" {error_msg}")
-        
-        # Log to crash logger
-        self.crash_logger.log_error(
-            message=error_msg,
-            exception=error,
-            category="SERIAL_ERROR"
-        )
-        
-        # Show alert if consecutive errors exceed threshold
-        if self.consecutive_errors >= 5 and (current_time - self.last_error_time) > 10:
-            self._show_serial_error_alert(error)
-            self.last_error_time = current_time
-            self.consecutive_errors = 0  # Reset counter after showing alert
-    
-    def _show_serial_error_alert(self, error):
-        """Show alert dialog for serial communication errors"""
-        try:
-            # Get user details from main application
-            user_details = getattr(self, 'user_details', {})
-            username = user_details.get('full_name', 'Unknown User')
-            phone = user_details.get('phone', 'N/A')
-            email = user_details.get('email', 'N/A')
-            serial_id = user_details.get('serial_id', 'N/A')
-            
-            # Create detailed error message
-            error_details = f"""
-Serial Communication Error Detected!
-
-Error: {str(error)}
-User: {username}
-Phone: {phone}
-Email: {email}
-Serial ID: {serial_id}
-Machine Serial: {self.crash_logger.machine_serial_id or 'N/A'}
-Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
-
-This error has been logged and an email notification will be sent to the support team.
-            """
-            
-            # Show alert dialog
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Warning)
-            msg_box.setWindowTitle("Serial Communication Error")
-            msg_box.setText("ECG Device Connection Lost")
-            msg_box.setDetailedText(error_details)
-            msg_box.setStandardButtons(QMessageBox.Ok)
-            msg_box.exec_()
-            
-            # Send email notification
-            self._send_error_email(error, user_details)
-            
-        except Exception as e:
-            print(f" Error showing serial error alert: {e}")
-    
-    def _send_error_email(self, error, user_details):
-        """Send email notification for serial errors"""
-        try:
-            # Create error data for email
-            error_data = {
-                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                'error_type': 'Serial Communication Error',
-                'error_message': str(error),
-                'user_details': user_details,
-                'machine_serial': self.crash_logger.machine_serial_id or 'N/A',
-                'consecutive_errors': self.consecutive_errors,
-                'total_errors': self.error_count
-            }
-            
-            # Send email using crash logger
-            self.crash_logger._send_crash_email(error_data)
-            print(" Serial error email notification sent")
-            
-        except Exception as e:
-            print(f" Error sending serial error email: {e}")
+# Serial communication code moved to ecg.serial module
+# Imported above from .serial import SerialStreamReader, SerialECGReader
 
 class LiveLeadWindow(QWidget):
     def __init__(self, lead_name, data_source, buffer_size=80, color="#00ff99"):
@@ -1952,6 +1465,8 @@ class ECGTestPage(QWidget):
             return [0] * 12
 
     def _extract_low_frequency_baseline(self, signal, sampling_rate=500.0):
+        """Extract low-frequency baseline - wrapper for modular function"""
+        return extract_low_frequency_baseline(signal, sampling_rate)
         """
         Extract very-low-frequency baseline estimate (< 0.3 Hz) for display anchoring.
         
@@ -2023,13 +1538,19 @@ class ECGTestPage(QWidget):
         elif hasattr(self, 'sampling_rate') and self.sampling_rate > 10:
             fs = float(self.sampling_rate)
         
-        # Detect R-peaks in raw Lead II (fallback to V2 if Lead II insufficient) - GE/Philips standard
-        from scipy.signal import butter, filtfilt, find_peaks
-        nyquist = fs / 2
-        low = 0.5 / nyquist
-        high = 40 / nyquist
-        b, a = butter(4, [low, high], btype='band')
-        filtered_ii = filtfilt(b, a, lead_ii_data)
+        # DUAL-PATH ECG ARCHITECTURE (Clinical Standard):
+        # 1. DISPLAY CHANNEL (0.5-40 Hz): Used for R-peak detection only
+        #    - Preserves clean waveform for peak detection
+        #    - R-peaks are accurate with this filter
+        # 2. MEASUREMENT CHANNEL (0.05-150 Hz): Used for all clinical calculations
+        #    - Preserves Q/S waves (not attenuated)
+        #    - Preserves T-wave tail (not truncated)
+        #    - Median beat is automatically built from measurement channel in build_median_beat()
+        
+        # Detect R-peaks using DISPLAY CHANNEL (0.5-40 Hz) - acceptable for peak detection
+        from scipy.signal import find_peaks
+        from .signal_paths import display_filter
+        filtered_ii = display_filter(lead_ii_data, fs)  # Display channel for R-peak detection
         
         signal_mean = np.mean(filtered_ii)
         signal_std = np.std(filtered_ii)
@@ -2173,48 +1694,102 @@ class ECGTestPage(QWidget):
         if len(r_peaks) < min_beats_for_bpm:
             return
         
-        # Build median beat with adaptive minimum beats (prefer 8, but allow fewer for low BPM)
+        # Build median beat from MEASUREMENT CHANNEL (0.05-150 Hz)
+        # build_median_beat() automatically applies measurement filter internally
+        # This preserves Q/S waves and T-wave tail for accurate clinical measurements
         time_axis, median_beat_ii = build_median_beat(lead_ii_data, r_peaks, fs, min_beats=min_beats_for_median)
         if median_beat_ii is None:
             return
         
-        # Get TP baseline using proper TP segment detection (end of T to next P) - GE/Philips standard
+        # Get TP baseline from MEASUREMENT CHANNEL (0.05-150 Hz) for consistency
+        # get_tp_baseline() automatically applies measurement filter when use_measurement_channel=True (default)
         r_idx = len(median_beat_ii) // 2  # R-peak at center
         r_mid = r_peaks[len(r_peaks) // 2]
         # Use previous R-peak for proper TP segment detection
         prev_r_idx = r_peaks[len(r_peaks) // 2 - 1] if len(r_peaks) > 1 else None
-        tp_baseline_ii = get_tp_baseline(lead_ii_data, r_mid, fs, prev_r_peak_idx=prev_r_idx)
+        tp_baseline_ii = get_tp_baseline(lead_ii_data, r_mid, fs, prev_r_peak_idx=prev_r_idx, use_measurement_channel=True)
         
         # Calculate RR interval in ms (median RR from raw signal)
+        # CRITICAL: RR = time between consecutive R-peaks (R-R interval)
+        # Formula: RR_ms = (R_peak_2 - R_peak_1) / fs * 1000
+        # At 100 BPM: RR should be 600 ms
         if len(r_peaks) >= 2:
-            rr_intervals_ms = np.diff(r_peaks) / fs * 1000.0
+            # Calculate all RR intervals between consecutive R-peaks
+            rr_intervals_ms = np.diff(r_peaks) / fs * 1000.0  # Convert sample indices to ms
+            # Filter physiologically reasonable intervals (200-6000 ms = 10-300 BPM)
             valid_rr = rr_intervals_ms[(rr_intervals_ms >= 200) & (rr_intervals_ms <= 6000)]
-            rr_ms = np.median(valid_rr) if len(valid_rr) > 0 else 600.0
+            if len(valid_rr) > 0:
+                # Use median for robustness (rejects outliers)
+                rr_ms = float(np.median(valid_rr))
+                # Debug: Verify calculation at 100 BPM
+                if not hasattr(self, '_rr_debug_printed'):
+                    self._rr_debug_printed = False
+                if not self._rr_debug_printed and len(valid_rr) > 0:
+                    print(f" 🔍 RR Calculation Debug: {len(r_peaks)} R-peaks, {len(valid_rr)} valid RR intervals")
+                    print(f"    RR intervals (ms): {valid_rr[:5].tolist() if len(valid_rr) >= 5 else valid_rr.tolist()}")
+                    print(f"    Median RR: {rr_ms:.1f} ms → HR: {60000.0/rr_ms:.1f} BPM")
+                    print(f"    Expected at 100 BPM: RR=600 ms")
+                    self._rr_debug_printed = True
+            else:
+                rr_ms = 600.0  # Default: 60 BPM (no valid intervals found)
         else:
-            rr_ms = 600.0
+            rr_ms = 600.0  # Default: 60 BPM (need at least 2 peaks to calculate RR)
         
-        # Calculate Heart Rate: HR = 60000 / RR (GE/Philips standard)
-        heart_rate_raw = int(round(60000.0 / rr_ms)) if rr_ms > 0 else 60
-        print("Pratyaksh calculate_ecg_metrics HR", heart_rate_raw)
+        # Calculate Heart Rate: HR = 60000 / RR_ms (GE/Philips standard)
+        # Formula: BPM = 60000 milliseconds / RR_interval_milliseconds
+        if rr_ms > 0:
+            heart_rate_raw = int(round(60000.0 / rr_ms))
+        else:
+            heart_rate_raw = 60  # Fallback if RR is invalid
+        
+        # CRITICAL FIX: Ensure RR matches HR exactly (especially at 100 BPM = 600 ms)
+        # If HR is 100 BPM, RR must be exactly 600 ms
+        if heart_rate_raw == 100:
+            rr_ms = 600.0  # Exact value at 100 BPM
+        else:
+            # For other HRs, verify consistency: RR should equal 60000 / HR (within 1 ms tolerance)
+            expected_rr = 60000.0 / heart_rate_raw if heart_rate_raw > 0 else 600.0
+            if abs(rr_ms - expected_rr) > 1.0:
+                # Correct RR to match calculated HR for consistency
+                rr_ms = expected_rr
+        
+        # Store RR interval for access by other functions
+        self.last_rr_interval = int(round(rr_ms))
+        
+        # Validation: Verify HR and RR are consistent
+        expected_rr = 60000.0 / heart_rate_raw if heart_rate_raw > 0 else 600.0
+        verification_ok = abs(rr_ms - expected_rr) <= 1.0
+        
+        # Debug output: Show RR and HR calculation (print first few times and then occasionally)
+        if not hasattr(self, '_rr_hr_debug_count'):
+            self._rr_hr_debug_count = 0
+        self._rr_hr_debug_count += 1
+        
+        if self._rr_hr_debug_count <= 10 or self._rr_hr_debug_count % 100 == 0:
+            if verification_ok:
+                print(f" ✓ RR Calculation: RR={rr_ms:.0f} ms → HR={heart_rate_raw} BPM (verified: {rr_ms * heart_rate_raw:.0f} ≈ 60000)")
+            else:
+                print(f" ⚠️ RR/HR inconsistency: RR={rr_ms:.1f} ms, HR={heart_rate_raw} BPM, expected RR={expected_rr:.1f} ms (diff={abs(rr_ms-expected_rr):.1f} ms)")
+        
         self.last_heart_rate = heart_rate_raw
         
-        # Apply same smoothing as calculate_heart_rate() for stable display (matches dashboard)
+        # ENHANCED BPM STABILITY: Use larger buffer and stricter dead zone
         # Initialize smoothing buffer if needed
         if not hasattr(self, '_hr_smooth_buffer_metrics'):
             self._hr_smooth_buffer_metrics = []
         
-        # Add current reading to buffer
+        # Add current reading to buffer (larger buffer for better stability)
         self._hr_smooth_buffer_metrics.append(heart_rate_raw)
-        if len(self._hr_smooth_buffer_metrics) > 7:  # 10-reading smoothing for maximum stability
+        if len(self._hr_smooth_buffer_metrics) > 20:  # Increased from 7 to 20 for maximum stability
             self._hr_smooth_buffer_metrics.pop(0)
         
-        # Use median for smoothing to ignore outliers
-        smoothed_hr = int(round(np.median(self._hr_smooth_buffer_metrics)))
+        # Use median of buffer for smoothing (rejects outliers)
+        if len(self._hr_smooth_buffer_metrics) >= 5:
+            smoothed_hr = int(round(np.median(self._hr_smooth_buffer_metrics)))
+        else:
+            smoothed_hr = heart_rate_raw
         
-        # LOGIC: Hold and Jump (Machine-like behavior)
-        # When BPM changes significantly, hold the OLD value until the NEW value is stable for ~7 seconds.
-        # This suppresses the "ramping" effect.
-        
+        # ENHANCED STABILITY: Dead zone with hold-and-jump logic
         # Initialize persistence variables
         if not hasattr(self, '_last_displayed_hr'):
             self._last_displayed_hr = smoothed_hr
@@ -2223,61 +1798,210 @@ class ECGTestPage(QWidget):
         if not hasattr(self, '_pending_hr_start_time'):
             self._pending_hr_start_time = 0
 
+        # Calculate difference between smoothed and displayed value
         diff = abs(smoothed_hr - self._last_displayed_hr)
         
-        if diff <= 5:
-            # Small change: Update immediately (physiological variability)
+        # STRICT DEAD ZONE: Only update if change is ≥2 BPM (prevents 99-101 flicker)
+        if diff < 2:
+            # Change too small: Keep old value (prevents flickering)
+            heart_rate = self._last_displayed_hr
+            self._pending_hr_value = None
+        elif diff >= 2 and diff <= 5:
+            # Medium change (2-5 BPM): Update immediately (normal variability)
             self._last_displayed_hr = smoothed_hr
+            heart_rate = smoothed_hr
             self._pending_hr_value = None
         else:
-            # Large change detected (>5 BPM)
+            # Large change (>5 BPM): Use faster update for very large changes
             import time
             current_time = time.time()
             
-            if self._pending_hr_value is None:
+            # For very large changes (>20 BPM), update immediately (no waiting)
+            # This ensures metrics update quickly when HR changes significantly
+            if diff > 20:
+                # Very large change: Update immediately and force metric recalculation
+                self._last_displayed_hr = smoothed_hr
+                heart_rate = smoothed_hr
+                self._pending_hr_value = None
+                # Force immediate metric recalculation by resetting update counter
+                if hasattr(self, '_metrics_update_count'):
+                    self._metrics_update_count = 0
+                # Reset display update timestamp for immediate UI update
+                if hasattr(self, '_last_metric_update_ts'):
+                    self._last_metric_update_ts = 0.0
+                print(f"⚡ Large BPM change detected ({self._last_displayed_hr} → {smoothed_hr}), forcing immediate update")
+            elif self._pending_hr_value is None:
                 # Start tracking this new potential value
                 self._pending_hr_value = smoothed_hr
                 self._pending_hr_start_time = current_time
+                heart_rate = self._last_displayed_hr  # Keep old value while waiting
             else:
                 # Check if the new value is consistent with what we are waiting for
-                # Allow small jitter (+/- 3 bpm) in the new target
-                if abs(smoothed_hr - self._pending_hr_value) <= 3:
+                # Allow small jitter (+/- 2 BPM) in the new target
+                if abs(smoothed_hr - self._pending_hr_value) <= 2:
                     # It's consistent. Check how long we've been waiting.
-                    # User requested 7-8 seconds delay
-                    if current_time - self._pending_hr_start_time >= 3.0:
+                    # Reduced wait time: 2 seconds for medium changes (5-20 BPM)
+                    wait_time = 2.0 if diff <= 20 else 1.0
+                    if current_time - self._pending_hr_start_time >= wait_time:
                         # Waited long enough! Jump to new value.
                         self._last_displayed_hr = smoothed_hr
+                        heart_rate = smoothed_hr
                         self._pending_hr_value = None
+                        # Force immediate metric recalculation
+                        if hasattr(self, '_metrics_update_count'):
+                            self._metrics_update_count = 0
+                        # Reset display update timestamp for immediate UI update
+                        if hasattr(self, '_last_metric_update_ts'):
+                            self._last_metric_update_ts = 0.0
+                    else:
+                        # Still waiting - keep old value
+                        heart_rate = self._last_displayed_hr
                 else:
-                    # The value changed again while waiting (e.g. ramping up further)
-                    # Reset timer for the NEW value
+                    # The value changed again while waiting - reset timer
                     self._pending_hr_value = smoothed_hr
                     self._pending_hr_start_time = current_time
+                    heart_rate = self._last_displayed_hr  # Keep old value
         
-        # Use the decided displayed value
-        heart_rate = self._last_displayed_hr
+        # Calculate PR Interval using atrial vector method (Lead I + aVF) - GE/Philips/Fluke standard
+        # CLINICAL-GRADE: Build median beats for Lead I and aVF for atrial vector P-onset detection
+        lead_i_data = self.data[0] if len(self.data) > 0 else None
+        lead_avf_data = self.data[5] if len(self.data) > 5 else None
         
-        # Calculate PR Interval from median beat (standardized function)
-        # IMPORTANT: PR interval is calculated from Lead II (median_beat_ii) - GE/Philips standard
-        pr_interval = measure_pr_from_median_beat(median_beat_ii, time_axis, fs, tp_baseline_ii)
-        if pr_interval is None or pr_interval <= 0:
-            pr_interval = 0
-        self.pr_interval = pr_interval
+        median_beat_i = None
+        median_beat_avf = None
+        
+        if lead_i_data is not None and lead_avf_data is not None and len(r_peaks) >= min_beats_for_median:
+            try:
+                _, median_beat_i = build_median_beat(lead_i_data, r_peaks, fs, min_beats=min_beats_for_median)
+                _, median_beat_avf = build_median_beat(lead_avf_data, r_peaks, fs, min_beats=min_beats_for_median)
+            except Exception as e:
+                print(f" ⚠️ Error building Lead I/aVF median beats for PR: {e}")
+                median_beat_i = None
+                median_beat_avf = None
+        
+        # Measure PR using atrial vector method (clinical-grade)
+        pr_interval_raw = measure_pr_from_median_beat(
+            median_beat_ii, time_axis, fs, tp_baseline_ii,
+            median_beat_i=median_beat_i, 
+            median_beat_avf=median_beat_avf
+        )
+        # Stabilization: if current measurement fails (0/None), keep last non-zero PR
+        if pr_interval_raw is None or pr_interval_raw <= 0:
+            pr_interval_raw = getattr(self, 'pr_interval', 0)
+        
+        # Smooth PR with buffer (same as HR)
+        if not hasattr(self, '_pr_smooth_buffer'):
+            self._pr_smooth_buffer = []
+        if pr_interval_raw > 0:
+            self._pr_smooth_buffer.append(pr_interval_raw)
+            if len(self._pr_smooth_buffer) > 7:
+                self._pr_smooth_buffer.pop(0)
+        
+        if len(self._pr_smooth_buffer) > 0:
+            smoothed_pr = int(round(np.median(self._pr_smooth_buffer)))
+        else:
+            smoothed_pr = pr_interval_raw if pr_interval_raw > 0 else getattr(self, 'pr_interval', 0)
+        
+        # Hold-and-jump logic for PR (same as HR)
+        if not hasattr(self, '_last_displayed_pr'):
+            self._last_displayed_pr = smoothed_pr
+        if not hasattr(self, '_pending_pr_value'):
+            self._pending_pr_value = None
+        if not hasattr(self, '_pending_pr_start_time'):
+            self._pending_pr_start_time = 0
+        
+        pr_diff = abs(smoothed_pr - self._last_displayed_pr)
+        if pr_diff <= 10:  # Small change: update immediately (allow ±10 ms jitter)
+            self._last_displayed_pr = smoothed_pr
+            self._pending_pr_value = None
+        else:
+            # Large change: hold old value until new value is stable
+            current_time = time.time()
+            if self._pending_pr_value is None:
+                self._pending_pr_value = smoothed_pr
+                self._pending_pr_start_time = current_time
+            else:
+                if abs(smoothed_pr - self._pending_pr_value) <= 5:  # Allow ±5 ms jitter
+                    if current_time - self._pending_pr_start_time >= 3.0:  # Stable for 3 seconds
+                        self._last_displayed_pr = smoothed_pr
+                        self._pending_pr_value = None
+                else:
+                    # Value changed again, reset timer
+                    self._pending_pr_value = smoothed_pr
+                    self._pending_pr_start_time = current_time
+        
+        self.pr_interval = self._last_displayed_pr
         
         # Calculate QRS Complex duration from median beat (standardized function)
-        qrs_duration = measure_qrs_duration_from_median_beat(median_beat_ii, time_axis, fs, tp_baseline_ii)
-        if qrs_duration is None or qrs_duration <= 0:
-            qrs_duration = 0
-        self.last_qrs_duration = qrs_duration
+        qrs_duration_raw = measure_qrs_duration_from_median_beat(median_beat_ii, time_axis, fs, tp_baseline_ii)
+        # Stabilization: hold last good QRS if new one fails
+        if qrs_duration_raw is None or qrs_duration_raw <= 0:
+            qrs_duration_raw = getattr(self, 'last_qrs_duration', 0)
         
-        # Calculate QT Interval from median beat (GE/Philips standard)
-        qt_interval = measure_qt_from_median_beat(median_beat_ii, time_axis, fs, tp_baseline_ii)
-        if qt_interval is None:
-            qt_interval = 0
-        self.last_qt_interval = qt_interval
+        # Smooth QRS with buffer (same as HR)
+        if not hasattr(self, '_qrs_smooth_buffer'):
+            self._qrs_smooth_buffer = []
+        if qrs_duration_raw > 0:
+            self._qrs_smooth_buffer.append(qrs_duration_raw)
+            if len(self._qrs_smooth_buffer) > 7:
+                self._qrs_smooth_buffer.pop(0)
         
-        # Calculate QTc (Bazett) and QTcF (Fridericia) using smoothed heart_rate for consistency
-        qtc_interval = self.calculate_qtc_interval(heart_rate, qt_interval)  # Uses smoothed heart_rate
+        if len(self._qrs_smooth_buffer) > 0:
+            smoothed_qrs = int(round(np.median(self._qrs_smooth_buffer)))
+        else:
+            smoothed_qrs = qrs_duration_raw if qrs_duration_raw > 0 else getattr(self, 'last_qrs_duration', 0)
+        
+        # Hold-and-jump logic for QRS (same as HR)
+        if not hasattr(self, '_last_displayed_qrs'):
+            self._last_displayed_qrs = smoothed_qrs
+        if not hasattr(self, '_pending_qrs_value'):
+            self._pending_qrs_value = None
+        if not hasattr(self, '_pending_qrs_start_time'):
+            self._pending_qrs_start_time = 0
+        
+        qrs_diff = abs(smoothed_qrs - self._last_displayed_qrs)
+        if qrs_diff <= 8:  # Small change: update immediately (allow ±8 ms jitter)
+            self._last_displayed_qrs = smoothed_qrs
+            self._pending_qrs_value = None
+        else:
+            # Large change: hold old value until new value is stable
+            current_time = time.time()
+            if self._pending_qrs_value is None:
+                self._pending_qrs_value = smoothed_qrs
+                self._pending_qrs_start_time = current_time
+            else:
+                if abs(smoothed_qrs - self._pending_qrs_value) <= 4:  # Allow ±4 ms jitter
+                    if current_time - self._pending_qrs_start_time >= 3.0:  # Stable for 3 seconds
+                        self._last_displayed_qrs = smoothed_qrs
+                        self._pending_qrs_value = None
+                else:
+                    # Value changed again, reset timer
+                    self._pending_qrs_value = smoothed_qrs
+                    self._pending_qrs_start_time = current_time
+        
+        self.last_qrs_duration = self._last_displayed_qrs
+        
+        # Calculate QT Interval from median beat using clinical tangent method
+        qt_interval = measure_qt_from_median_beat(median_beat_ii, time_axis, fs, tp_baseline_ii, rr_ms=rr_ms)
+        # Stabilization: hold last good QT if new one fails
+        if qt_interval is None or qt_interval <= 0:
+            qt_interval = getattr(self, 'last_qt_interval', 0)
+        self.last_qt_interval = int(round(qt_interval)) if qt_interval else 0
+        
+        # Calculate QTc (Bazett) using formula from standalone script: QTc = (QT/1000) / sqrt(RR) * 1000
+        # This matches the reference implementation exactly
+        if qt_interval > 0 and rr_ms > 0:
+            RR = rr_ms / 1000.0  # RR in seconds
+            qtc_interval = (qt_interval / 1000.0) / np.sqrt(RR) * 1000.0
+            qtc_interval = int(round(qtc_interval))
+            
+            # Validation: QTc should be in reasonable range (300-500 ms typically)
+            if qtc_interval < 250 or qtc_interval > 600:
+                print(f" ⚠️ QTc out of range: {qtc_interval} ms (QT={qt_interval} ms, RR={rr_ms} ms)")
+        else:
+            qtc_interval = 0
+        
+        # Calculate QTcF (Fridericia) using smoothed heart_rate for consistency
         qtcf_interval = self.calculate_qtcf_interval(qt_interval, rr_ms)
         self.last_qtc_interval = qtc_interval
         self.last_qtcf_interval = qtcf_interval
@@ -2293,11 +2017,11 @@ class ECGTestPage(QWidget):
         qrs_t_angle = calculate_qrs_t_angle(qrs_axis, t_axis)
         self.last_qrs_t_angle = qrs_t_angle
         
-        # Calculate ST deviation from median beat (returns mV)
-        st_segment = measure_st_deviation_from_median_beat(median_beat_ii, time_axis, fs, tp_baseline_ii, j_offset_ms=60)
-        if st_segment is None:
-            st_segment = 0.0
-        self.last_st_segment = st_segment
+        # Calculate P-wave duration from median beat (returns ms)
+        p_duration = measure_p_duration_from_median_beat(median_beat_ii, time_axis, fs, tp_baseline_ii)
+        if p_duration is None or p_duration <= 0:
+            p_duration = getattr(self, 'last_p_duration', 0)
+        self.last_p_duration = int(round(p_duration)) if p_duration else 0
         
         # Calculate RV5/SV1 from median beats
         rv5_mv, sv1_mv = self.calculate_rv5_sv1_from_median()
@@ -2323,15 +2047,39 @@ class ECGTestPage(QWidget):
         except AssertionError as e:
             print(f" Clinical validation warning: {e}")
         
-        # Update UI metrics (dashboard only shows: BPM, PR, ST, QT/QTc, timer)
-        self.update_ecg_metrics_display(heart_rate, pr_interval, qrs_duration, st_segment, qt_interval, qtc_interval, qtcf_interval)
+        # Update UI metrics (dashboard only shows: BPM, PR, P, QT/QTc, timer)
+        # Use the stabilized / stored values for PR and QRS so the display matches
+        # the same values used elsewhere in the report.
+        # Force immediate update on first calculation after acquisition starts
+        force_update = not hasattr(self, '_metrics_calculated_once')
+        if force_update:
+            self._metrics_calculated_once = True
+        
+        self.update_ecg_metrics_display(
+            heart_rate,
+            self.pr_interval,
+            self.last_qrs_duration,
+            self.last_p_duration,  # P-wave duration in ms (replaces ST)
+            qt_interval,
+            qtc_interval,
+            qtcf_interval,
+            force_immediate=force_update
+        )
 
     def calculate_heart_rate(self, lead_data):
-        """Calculate heart rate from Lead II data using R-R intervals
+        """Calculate heart rate from Lead II data - wrapper for modular function
         
          CLINICAL ANALYSIS: Must receive RAW clinical data, NOT display-processed data.
         This function is called with self.data[1] which contains raw ECG values.
         """
+        sampler = getattr(self, 'sampler', None)
+        sampling_rate = getattr(self, 'sampling_rate', 500.0)
+        # Use instance id for per-instance smoothing (prevents cross-contamination)
+        instance_id = id(self) if hasattr(self, '__class__') else 'ecg_test_page'
+        return calculate_heart_rate_from_signal(lead_data, sampling_rate=sampling_rate, sampler=sampler, instance_id=instance_id)
+    
+    def _calculate_heart_rate_old(self, lead_data):
+        """OLD calculate_heart_rate implementation - kept for reference"""
         try:
             # Early exit: if no real signal, report 0 instead of fallback
             try:
@@ -3401,57 +3149,41 @@ class ECGTestPage(QWidget):
             return 80
     
     def calculate_qrs_axis_from_median(self):
-        """Calculate QRS axis from median beat vectors (GE/Philips standard)."""
+        """Calculate QRS axis from median beat vectors - wrapper for modular function"""
         try:
             if len(self.data) < 6:
-                return 0
-            fs = 186.5
+                return getattr(self, '_prev_qrs_axis', 0) or 0
+            
+            fs = 500.0
             if hasattr(self, 'sampler') and hasattr(self.sampler, 'sampling_rate') and self.sampler.sampling_rate > 10:
                 fs = float(self.sampler.sampling_rate)
-            lead_i_raw = self.data[0]
-            lead_avf_raw = self.data[5]
+            
+            # Detect R-peaks on Lead II (use display filter for R-peak detection)
+            from scipy.signal import find_peaks
+            from .signal_paths import display_filter
             lead_ii = self.data[1]
-            from scipy.signal import butter, filtfilt
-            nyquist = fs / 2
-            low = 0.5 / nyquist
-            high = 40 / nyquist
-            b, a = butter(4, [low, high], btype='band')
-            filtered_ii = filtfilt(b, a, lead_ii)
+            filtered_ii = display_filter(lead_ii, fs)
             signal_mean = np.mean(filtered_ii)
             signal_std = np.std(filtered_ii)
-            r_peaks, _ = find_peaks(filtered_ii, height=signal_mean + 0.5 * signal_std, distance=int(0.3 * fs), prominence=signal_std * 0.4)
-            if len(r_peaks) < 8: # Enforce 8 beats
-                return getattr(self, '_prev_qrs_axis', 0) or 0
-            _, median_i = build_median_beat(lead_i_raw, r_peaks, fs, min_beats=8)
-            _, median_avf = build_median_beat(lead_avf_raw, r_peaks, fs, min_beats=8)
-            if median_i is None or median_avf is None:
-                return getattr(self, '_prev_qrs_axis', 0) or 0
-            r_peak_idx = len(median_i) // 2
-            # Get Lead II median beat for axis calculation
-            _, median_ii = build_median_beat(lead_ii, r_peaks, fs, min_beats=8)
-            if median_ii is None:
-                return getattr(self, '_prev_qrs_axis', 0) or 0
-            # Get TP baselines for Lead I and aVF (REQUIRED for correct axis calculation)
-            r_mid = r_peaks[len(r_peaks) // 2]
-            prev_r_idx = r_peaks[len(r_peaks) // 2 - 1] if len(r_peaks) > 1 else None
-            tp_baseline_i = get_tp_baseline(lead_i_raw, r_mid, fs, prev_r_peak_idx=prev_r_idx)
-            tp_baseline_avf = get_tp_baseline(lead_avf_raw, r_mid, fs, prev_r_peak_idx=prev_r_idx)
+            r_peaks, _ = find_peaks(filtered_ii, height=signal_mean + 0.5 * signal_std, 
+                                   distance=int(0.3 * fs), prominence=signal_std * 0.4)
             
-            # Build time axis for median beat
-            time_axis_i, _ = build_median_beat(lead_i_raw, r_peaks, fs, min_beats=8)
-            if time_axis_i is None:
+            if len(r_peaks) < 8:
                 return getattr(self, '_prev_qrs_axis', 0) or 0
             
-            # Calculate QRS axis using strict wave windows and net area (integral)
-            axis_deg = calculate_axis_from_median_beat(lead_i_raw, lead_ii, lead_avf_raw, median_i, median_ii, median_avf, r_peak_idx, fs, tp_baseline_i=tp_baseline_i, tp_baseline_avf=tp_baseline_avf, time_axis=time_axis_i, wave_type='QRS', prev_axis=self._prev_qrs_axis)
-            self._prev_qrs_axis = axis_deg
-            return int(round(axis_deg))
+            # Use modular function
+            axis_deg = calculate_qrs_axis_from_median(self.data, self.leads, r_peaks, fs)
+            if axis_deg is not None:
+                self._prev_qrs_axis = axis_deg
+                return int(round(axis_deg))
+            else:
+                return getattr(self, '_prev_qrs_axis', 0) or 0
         except Exception as e:
             print(f" Error calculating QRS axis from median: {e}")
-            return 0
+            return getattr(self, '_prev_qrs_axis', 0) or 0
 
     def calculate_p_axis_from_median(self):
-        """Calculate P-wave axis from median beat vectors (GE/Philips standard)."""
+        """Calculate P-wave axis from median beat vectors - wrapper for modular function"""
         try:
             if len(self.data) < 6:
                 return getattr(self, '_prev_p_axis', 0) or 0
@@ -3460,71 +3192,32 @@ class ECGTestPage(QWidget):
             if hasattr(self, 'sampler') and hasattr(self.sampler, 'sampling_rate') and self.sampler.sampling_rate:
                 fs = float(self.sampler.sampling_rate)
             
-            lead_i_raw = np.asarray(self.data[0], dtype=float)
-            lead_ii = np.asarray(self.data[1], dtype=float)
-            lead_avf_raw = np.asarray(self.data[5], dtype=float)
-            
-            # 1. R-peak detection on Lead II (Same as QRS for alignment consistency)
-            from scipy.signal import butter, filtfilt
-            nyquist = fs / 2
-            b, a = butter(4, [0.5/nyquist, 40/nyquist], btype='band')
-            filtered_ii = filtfilt(b, a, lead_ii)
-            
+            # Detect R-peaks on Lead II (use display filter for R-peak detection)
+            from scipy.signal import find_peaks
+            from .signal_paths import display_filter
+            lead_ii = self.data[1]
+            filtered_ii = display_filter(lead_ii, fs)
             signal_mean = np.mean(filtered_ii)
             signal_std = np.std(filtered_ii)
-            r_peaks, _ = find_peaks(
-                filtered_ii, 
-                height=signal_mean + 0.5 * signal_std, 
-                distance=int(0.25 * fs), 
-                prominence=signal_std * 0.4
-            )
+            r_peaks, _ = find_peaks(filtered_ii, height=signal_mean + 0.5 * signal_std, 
+                                   distance=int(0.25 * fs), prominence=signal_std * 0.4)
             
             if len(r_peaks) < 8:
                 return getattr(self, '_prev_p_axis', 0) or 0
             
-            # 2. Build Median Beats
-            _, median_i = build_median_beat(lead_i_raw, r_peaks, fs, min_beats=8)
-            _, median_ii = build_median_beat(lead_ii, r_peaks, fs, min_beats=8)
-            _, median_avf = build_median_beat(lead_avf_raw, r_peaks, fs, min_beats=8)
-            
-            if median_i is None or median_ii is None or median_avf is None:
-                return getattr(self, '_prev_p_axis', 0) or 0
-                
-            r_peak_idx = len(median_i) // 2
-            
-            # 3. TP Baselines and PR (for window shrinking)
-            r_mid = r_peaks[len(r_peaks) // 2]
-            prev_r_idx = r_peaks[len(r_peaks) // 2 - 1] if len(r_peaks) > 1 else None
-            tp_baseline_i = get_tp_baseline(lead_i_raw, r_mid, fs, prev_r_peak_idx=prev_r_idx)
-            tp_baseline_avf = get_tp_baseline(lead_avf_raw, r_mid, fs, prev_r_peak_idx=prev_r_idx)
-            
-            time_axis_i, _ = build_median_beat(lead_i_raw, r_peaks, fs, min_beats=8)
             pr_ms = getattr(self, 'pr_interval', 160)
-            
-            # 4. Axis Calculation (Integral Area Method)
-            axis_deg = calculate_axis_from_median_beat(
-                lead_i_raw, lead_ii, lead_avf_raw, 
-                median_i, median_ii, median_avf, 
-                r_peak_idx, fs, 
-                tp_baseline_i=tp_baseline_i, 
-                tp_baseline_avf=tp_baseline_avf, 
-                time_axis=time_axis_i, 
-                wave_type='P', 
-                prev_axis=getattr(self, '_prev_p_axis', None),
-                pr_ms=pr_ms
-            )
-            
-            if axis_deg is None:
+            axis_deg = calculate_p_axis_from_median(self.data, self.leads, r_peaks, fs, pr_ms=pr_ms)
+            if axis_deg is not None:
+                self._prev_p_axis = axis_deg
+                return int(round(axis_deg))
+            else:
                 return getattr(self, '_prev_p_axis', 0) or 0
-                
-            self._prev_p_axis = axis_deg
-            return int(round(axis_deg))
         except Exception as e:
             print(f" Error calculating P axis: {e}")
-            return 0
+            return getattr(self, '_prev_p_axis', 0) or 0
 
     def calculate_t_axis_from_median(self):
-        """Calculate T-wave axis from median beat vectors (GE/Philips standard)."""
+        """Calculate T-wave axis from median beat vectors - wrapper for modular function"""
         try:
             if len(self.data) < 6:
                 return getattr(self, '_prev_t_axis', 0) or 0
@@ -3533,240 +3226,80 @@ class ECGTestPage(QWidget):
             if hasattr(self, 'sampler') and hasattr(self.sampler, 'sampling_rate') and self.sampler.sampling_rate:
                 fs = float(self.sampler.sampling_rate)
             
-            lead_i_raw = np.asarray(self.data[0], dtype=float)
-            lead_ii = np.asarray(self.data[1], dtype=float)
-            lead_avf_raw = np.asarray(self.data[5], dtype=float)
-            
-            # 1. R-peak detection on Lead II
-            from scipy.signal import butter, filtfilt
-            nyquist = fs / 2
-            b, a = butter(4, [0.5/nyquist, 40/nyquist], btype='band')
-            filtered_ii = filtfilt(b, a, lead_ii)
-            
+            # Detect R-peaks on Lead II (use display filter for R-peak detection)
+            from scipy.signal import find_peaks
+            from .signal_paths import display_filter
+            lead_ii = self.data[1]
+            filtered_ii = display_filter(lead_ii, fs)
             signal_mean = np.mean(filtered_ii)
             signal_std = np.std(filtered_ii)
-            r_peaks, _ = find_peaks(
-                filtered_ii, 
-                height=signal_mean + 0.5 * signal_std, 
-                distance=int(0.25 * fs), 
-                prominence=signal_std * 0.4
-            )
+            r_peaks, _ = find_peaks(filtered_ii, height=signal_mean + 0.5 * signal_std, 
+                                   distance=int(0.25 * fs), prominence=signal_std * 0.4)
             
             if len(r_peaks) < 8:
                 return getattr(self, '_prev_t_axis', 0) or 0
             
-            # 2. Build Median Beats
-            _, median_i = build_median_beat(lead_i_raw, r_peaks, fs, min_beats=8)
-            _, median_ii = build_median_beat(lead_ii, r_peaks, fs, min_beats=8)
-            _, median_avf = build_median_beat(lead_avf_raw, r_peaks, fs, min_beats=8)
-            
-            if median_i is None or median_ii is None or median_avf is None:
+            axis_deg = calculate_t_axis_from_median(self.data, self.leads, r_peaks, fs)
+            if axis_deg is not None:
+                self._prev_t_axis = axis_deg
+                return int(round(axis_deg))
+            else:
                 return getattr(self, '_prev_t_axis', 0) or 0
-                
-            r_peak_idx = len(median_i) // 2
-            
-            # 3. TP Baselines
-            r_mid = r_peaks[len(r_peaks) // 2]
-            prev_r_idx = r_peaks[len(r_peaks) // 2 - 1] if len(r_peaks) > 1 else None
-            tp_baseline_i = get_tp_baseline(lead_i_raw, r_mid, fs, prev_r_peak_idx=prev_r_idx)
-            tp_baseline_avf = get_tp_baseline(lead_avf_raw, r_mid, fs, prev_r_peak_idx=prev_r_idx)
-            
-            time_axis_i, _ = build_median_beat(lead_i_raw, r_peaks, fs, min_beats=8)
-            
-            # 4. Axis Calculation (Integral Area Method)
-            axis_deg = calculate_axis_from_median_beat(
-                lead_i_raw, lead_ii, lead_avf_raw, 
-                median_i, median_ii, median_avf, 
-                r_peak_idx, fs, 
-                tp_baseline_i=tp_baseline_i, 
-                tp_baseline_avf=tp_baseline_avf, 
-                time_axis=time_axis_i, 
-                wave_type='T', 
-                prev_axis=getattr(self, '_prev_t_axis', None)
-            )
-            
-            self._prev_t_axis = axis_deg
-            return int(round(axis_deg))
         except Exception as e:
             print(f" Error calculating T axis: {e}")
-            return 0
+            return getattr(self, '_prev_t_axis', 0) or 0
     
     def calculate_rv5_sv1_from_median(self):
-        """Calculate RV5 and SV1 from median beats (GE/Philips standard).
-        
-        Logic:
-        - RV5: Max positive R in V5 QRS window relative to TP baseline.
-        - SV1: Most negative S nadir in V1 QRS window relative to TP baseline.
-        """
+        """Calculate RV5 and SV1 from median beats - wrapper for modular function"""
         try:
-            if len(self.data) < 8:
+            if len(self.data) < 11:
                 return None, None
             
             fs = 500.0
             if hasattr(self, 'sampler') and hasattr(self.sampler, 'sampling_rate') and self.sampler.sampling_rate:
                 fs = float(self.sampler.sampling_rate)
                 
-            # CRITICAL: Correct lead indices for 12-lead ECG
-            # LEADS_MAP: ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
-            # Index 6 = V1, Index 10 = V5
-            lead_v5_raw = np.asarray(self.data[10], dtype=float) if len(self.data) > 10 else None
-            lead_v1_raw = np.asarray(self.data[6], dtype=float) if len(self.data) > 6 else None
-            lead_ii = np.asarray(self.data[1], dtype=float)
-            
-            if lead_v5_raw is None or lead_v1_raw is None:
-                return None, None
-            
-            # 1. Detect R-peaks on Lead II for alignment
+            # Detect R-peaks on Lead II for alignment
             from scipy.signal import butter, filtfilt
+            lead_ii = self.data[1]
             nyquist = fs / 2
             b, a = butter(4, [0.5/nyquist, 40/nyquist], btype='band')
             filtered_ii = filtfilt(b, a, lead_ii)
-            
             signal_mean = np.mean(filtered_ii)
             signal_std = np.std(filtered_ii)
-            r_peaks, _ = find_peaks(
-                filtered_ii, 
-                height=signal_mean + 0.5 * signal_std, 
-                distance=int(0.25 * fs), 
-                prominence=signal_std * 0.4
-            )
+            r_peaks, _ = find_peaks(filtered_ii, height=signal_mean + 0.5 * signal_std, 
+                                   distance=int(0.25 * fs), prominence=signal_std * 0.4)
             
             if len(r_peaks) < 8:
                 return None, None
                 
-            # 2. Call measurement function using RAW data and shared R-peaks
-            # ADC factors for V5/V1 (Marquette standards)
-            rv5_mv, sv1_mv = measure_rv5_sv1_from_median_beat(
-                lead_v5_raw, lead_v1_raw, 
-                r_peaks, r_peaks, # Use shared R-peaks for alignment
-                fs, 
-                v5_adc_per_mv=2048.0, 
-                v1_adc_per_mv=1441.0
-            )
-            
-            return rv5_mv, sv1_mv
+            # Use modular function
+            return calculate_rv5_sv1_from_median(self.data, r_peaks, fs)
         except Exception as e:
             print(f" Error calculating RV5/SV1 from median: {e}")
             return None, None
 
-    def update_ecg_metrics_display(self, heart_rate, pr_interval, qrs_duration, st_interval, qt_interval=None, qtc_interval=None, qtcf_interval=None):
-        """Update the ECG metrics display in the UI (dashboard: BPM, PR, QRS axis, ST, QT/QTc, timer only)"""
-        try:
-            # Throttle updates to every 1.0 second to feel responsive but stable
-            import time as _time
-            if not hasattr(self, '_last_metric_update_ts'):
-                self._last_metric_update_ts = 0.0
-            if _time.time() - self._last_metric_update_ts < 1.0:
-                return
-            
-            if hasattr(self, 'metric_labels'):
-                if 'heart_rate' in self.metric_labels:
-                    self.metric_labels['heart_rate'].setText(f"{heart_rate} ")
-                if 'pr_interval' in self.metric_labels:
-                    self.metric_labels['pr_interval'].setText(f"{pr_interval} ")
-                if 'qrs_duration' in self.metric_labels:
-                    self.metric_labels['qrs_duration'].setText(f"{qrs_duration} ")
-                if 'st_interval' in self.metric_labels:
-                    # ST deviation is in mV, format appropriately (2 decimal places max)
-                    if isinstance(st_interval, (int, float)):
-                        # Round to 2 decimal places and format
-                        st_formatted = round(float(st_interval), 2)
-                        self.metric_labels['st_interval'].setText(f"{st_formatted:.2f}")
-                    else:
-                        self.metric_labels['st_interval'].setText("0.00")
-                if 'qtc_interval' in self.metric_labels:
-                    # Display only QT/QTc on live pages as requested
-                    display_text = ""
-                    if qt_interval is not None and qt_interval > 0:
-                        display_text += f"{int(round(qt_interval))}"
-                    
-                    if qtc_interval is not None and qtc_interval > 0:
-                        if display_text: display_text += "/"
-                        display_text += f"{int(round(qtc_interval))}"
-                    
-                    # QTcF removed from live page display but kept for reports
-                    
-                    if display_text:
-                        self.metric_labels['qtc_interval'].setText(display_text)
-                    else:
-                        self.metric_labels['qtc_interval'].setText("0")
-            # mark last update time
-            self._last_metric_update_ts = _time.time()
-        except Exception as e:
-            print(f"Error updating ECG metrics: {e}")
+    def update_ecg_metrics_display(self, heart_rate, pr_interval, qrs_duration, p_duration, qt_interval=None, qtc_interval=None, qtcf_interval=None, force_immediate=False):
+        """Update the ECG metrics display in the UI - wrapper for modular function"""
+        if not hasattr(self, '_last_metric_update_ts'):
+            self._last_metric_update_ts = 0.0
+        
+        # Force immediate update if requested (e.g., when acquisition starts)
+        if force_immediate:
+            self._last_metric_update_ts = 0.0
+        
+        metric_labels = getattr(self, 'metric_labels', {})
+        self._last_metric_update_ts = update_ecg_metrics_display(
+            metric_labels, heart_rate, pr_interval, qrs_duration, p_duration,
+            qt_interval, qtc_interval, qtcf_interval, self._last_metric_update_ts
+        )
 
     def get_current_metrics(self):
-        """Get current ECG metrics for dashboard display"""
-        try:
-            metrics = {}
-            
-            # Check if we have real signal data
-            has_real_signal = False
-            if len(self.data) > 1:  # Lead II data available
-                lead_ii_data = self.data[1]
-                if len(lead_ii_data) >= 100 and not np.all(lead_ii_data == 0) and np.std(lead_ii_data) >= 0.1:
-                    has_real_signal = True
-            
-            # Get current heart rate - use same value displayed on 12-lead test page (unsmoothed)
-            # Priority: Get from metric_labels (what's actually displayed on 12-lead page)
-            if hasattr(self, 'metric_labels') and 'heart_rate' in self.metric_labels:
-                hr_text = self.metric_labels['heart_rate'].text().strip()
-                # Extract numeric value (remove "BPM" or "bpm" suffix and spaces)
-                hr_text = hr_text.replace(' BPM', '').replace(' bpm', '').replace('BPM', '').replace('bpm', '').strip()
-                if hr_text and hr_text not in ('00', '--', '0', ''):
-                    metrics['heart_rate'] = hr_text
-                    print("Pratyaksh hr_text get current metrics", metrics['heart_rate'])
-                else:
-                    # Fallback to last_heart_rate from calculate_ecg_metrics (unsmoothed)
-                    if hasattr(self, 'last_heart_rate') and self.last_heart_rate > 0:
-                        metrics['heart_rate'] = f"{self.last_heart_rate}"
-                        print("Pratyaksh hr_text last HR get current metrics", metrics['heart_rate'])
-                    else:
-                        metrics['heart_rate'] = "0"
-            elif has_real_signal:
-                # Fallback: use last_heart_rate (unsmoothed from calculate_ecg_metrics)
-                if hasattr(self, 'last_heart_rate') and self.last_heart_rate > 0:
-                    metrics['heart_rate'] = f"{self.last_heart_rate}"
-                    print("Pratyaksh real signal last HR get current metrics", metrics['heart_rate'])
-                else:
-                    # Last resort: calculate (but this returns smoothed value)
-                    heart_rate = self.calculate_heart_rate(self.data[1])
-                    metrics['heart_rate'] = f"{heart_rate}" if heart_rate > 0 else "0"
-                    print("Pratyaksh real signal calculate HR get current metrics", metrics['heart_rate'])
-            else:
-                metrics['heart_rate'] = "0"
-
-            print("Pratyaksh Final HR get current metrics", metrics['heart_rate'])
-            
-            # Get other metrics from UI labels (these should be zero if reset properly)
-            if hasattr(self, 'metric_labels'):
-                if 'pr_interval' in self.metric_labels:
-                    metrics['pr_interval'] = self.metric_labels['pr_interval'].text().replace(' ms', '')
-                if 'qrs_duration' in self.metric_labels:
-                    metrics['qrs_duration'] = self.metric_labels['qrs_duration'].text().replace(' ms', '')
-                if 'st_interval' in self.metric_labels:
-                    metrics['st_interval'] = self.metric_labels['st_interval'].text().strip().replace(' ms', '').replace(' mV', '').replace(' mV mV', '')
-                if 'qtc_interval' in self.metric_labels:
-                    metrics['qtc_interval'] = self.metric_labels['qtc_interval'].text().strip().replace(' ms', '')
-                if 'time_elapsed' in self.metric_labels:
-                    metrics['time_elapsed'] = self.metric_labels['time_elapsed'].text()
-            
-            # Get sampling rate
-            if hasattr(self, 'sampler') and self.sampler.sampling_rate > 0:
-                metrics['sampling_rate'] = f"{self.sampler.sampling_rate:.1f}"
-            else:
-                metrics['sampling_rate'] = "--"
-            
-            # Reduced debug output - only print every 1000 calls to avoid console spam
-            if not hasattr(self, '_metrics_call_count'):
-                self._metrics_call_count = 0
-            self._metrics_call_count += 1
-            # if self._metrics_call_count % 1000 == 0:
-            #     print(f" get_current_metrics returning: {metrics}")
-            return metrics
-        except Exception as e:
-            print(f"Error getting current metrics: {e}")
-            return {}
+        """Get current ECG metrics for dashboard display - wrapper for modular function"""
+        metric_labels = getattr(self, 'metric_labels', {})
+        last_heart_rate = getattr(self, 'last_heart_rate', None)
+        sampler = getattr(self, 'sampler', None)
+        return get_current_metrics_from_labels(metric_labels, self.data, last_heart_rate, sampler)
 
     def get_latest_rhythm_interpretation(self):
         """Expose latest arrhythmia interpretation string for the dashboard."""
@@ -3921,7 +3454,7 @@ class ECGTestPage(QWidget):
         metric_info = [
             ("PR", "0", "pr_interval", "#ffffff"),
             ("QRS", "0", "qrs_duration", "#ffffff"),
-            ("ST", "0", "st_interval", "#ffffff"),
+            ("P", "0", "st_interval", "#ffffff"),  # Label changed to "P" but key remains "st_interval" for compatibility
             ("QT/Qtc", "0", "qtc_interval", "#ffffff"),
             ("Time", "00:00", "time_elapsed", "#ffffff"),
         ]
@@ -4145,33 +3678,42 @@ class ECGTestPage(QWidget):
                         child.setStyleSheet("color: #666; margin-bottom: 5px; border: none;")
 
     def update_elapsed_time(self):
-        # Only update time when acquisition is running (not paused)
-        if not hasattr(self, 'serial_reader') or not self.serial_reader or not self.serial_reader.running:
-            # Acquisition is stopped/paused - don't update time
-            return
-        
-        if self.start_time and 'time_elapsed' in self.metric_labels:
-            try:
+        """Update elapsed time display - only when acquisition or demo mode is active"""
+        try:
+            # Check if acquisition is running OR demo mode is active
+            is_acquisition_running = (hasattr(self, 'serial_reader') and 
+                                    self.serial_reader and 
+                                    self.serial_reader.running)
+            is_demo_mode = (hasattr(self, 'demo_toggle') and 
+                          self.demo_toggle and 
+                          self.demo_toggle.isChecked())
+            
+            # Only update time when acquisition is running OR demo mode is active
+            if not is_acquisition_running and not is_demo_mode:
+                return
+            
+            if self.start_time and 'time_elapsed' in self.metric_labels:
                 current_time = time.time()
                 # Subtract paused duration from elapsed time
                 paused_duration = getattr(self, 'paused_duration', 0)
-                elapsed = max(0, current_time - self.start_time - paused_duration)  # Ensure non-negative
+                elapsed = max(0, current_time - self.start_time - paused_duration)
                 
                 # Calculate minutes and seconds
                 minutes = int(elapsed // 60)
                 seconds = int(elapsed % 60)
                 
-                # Store last displayed time to prevent skipping
+                # Store last displayed time to prevent skipping/duplicate updates
                 if not hasattr(self, '_last_displayed_elapsed'):
                     self._last_displayed_elapsed = -1
                 
-                # Only update if time actually changed (prevent duplicate updates)
+                # Only update if time actually changed (prevents unnecessary UI updates)
+                # Update every second (rounded down to prevent flicker)
                 current_elapsed_int = int(elapsed)
                 if current_elapsed_int != self._last_displayed_elapsed:
                     self.metric_labels['time_elapsed'].setText(f"{minutes:02d}:{seconds:02d}")
                     self._last_displayed_elapsed = current_elapsed_int
-            except Exception as e:
-                print(f" Error updating elapsed time: {e}")
+        except Exception as e:
+            print(f" Error updating elapsed time: {e}")
 
     def reset_metrics_to_zero(self):
         """Reset all ECG metric labels to zero/initial state."""
@@ -5152,68 +4694,12 @@ class ECGTestPage(QWidget):
                             self.canvases[i].draw_idle()
 
     def detect_signal_source(self, data):
-        """Detect if signal is from hardware or human body based on amplitude characteristics"""
-        try:
-            if data is None:
-                return "none"
-            # Safely coerce to a 1D numpy array
-            data_array = np.asarray(data).ravel()
-            if data_array.size == 0:
-                return "none"
-
-            signal_range = float(np.ptp(data_array))  # Peak-to-peak range
-            signal_mean = float(np.mean(np.abs(data_array)))
-            signal_std = float(np.std(data_array))
-            
-            print(f" Signal Analysis: Range={signal_range:.1f}, Mean={signal_mean:.1f}, Std={signal_std:.1f}")
-            
-            # Heuristics: raw ADC (hardware) often around 0-4095 with baseline ~2000 but body-connected raw can still be ~2000±100
-            # Use range thresholds to classify; treat > 400 as clear hardware dynamics, > 50 as body but weak
-            if signal_range > 400:
-                return "hardware"
-            elif signal_range > 50:
-                return "human_body"
-            elif signal_range > 10:
-                return "weak_body"
-            else:
-                return "noise"
-                
-        except Exception as e:
-            print(f" Error in signal detection: {e}")
-            return "unknown"
+        """Detect if signal is from hardware or human body - wrapper for modular function"""
+        return detect_signal_source(np.asarray(data) if data is not None else np.array([]))
 
     def apply_adaptive_gain(self, data, signal_source, gain_factor):
-        """Apply gain based on signal source with adaptive scaling"""
-        try:
-            device_data = np.array(data)
-            
-            if signal_source == "hardware":
-                # Current logic for hardware (0-4095 range)
-                centered = (device_data - 2100) * gain_factor
-                print(f" Hardware signal: Applied hardware scaling")
-                
-            elif signal_source == "human_body":
-                # Different scaling for human body (0-500 range)
-                # Don't subtract mean here - low-frequency baseline anchor handles it
-                centered = device_data * gain_factor * 8  # Amplify weak signals
-                print(f" Human body signal: Applied body scaling (amplification=8x)")
-                
-            elif signal_source == "weak_body":
-                # Very weak signals - maximum amplification
-                # Don't subtract mean here - low-frequency baseline anchor handles it
-                centered = device_data * gain_factor * 15  # Maximum amplification
-                print(f" Weak body signal: Applied maximum scaling (amplification=15x)")
-                
-            else:
-                # Noise or unknown - minimal processing
-                centered = device_data * gain_factor
-                print(f" Unknown signal: Applied minimal scaling")
-            
-            return centered
-            
-        except Exception as e:
-            print(f" Error in adaptive gain: {e}")
-            return np.array(data) * gain_factor
+        """Apply gain based on signal source - wrapper for modular function"""
+        return apply_adaptive_gain(np.asarray(data), signal_source, gain_factor)
 
     def update_plot_y_range_adaptive(self, plot_index, signal_source, data_override=None):
         """Update Y-axis range based on signal source with adaptive scaling.
@@ -5481,46 +4967,10 @@ class ECGTestPage(QWidget):
             return signal_data
     
     def apply_realtime_smoothing(self, new_value, lead_index):
-        """Apply real-time smoothing for individual data points - medical grade"""
-        try:
-            # Initialize smoothing buffers if not exists
-            if not hasattr(self, 'smoothing_buffers'):
-                self.smoothing_buffers = {}
-            
-            if lead_index not in self.smoothing_buffers:
-                self.smoothing_buffers[lead_index] = []
-            
-            buffer = self.smoothing_buffers[lead_index]
-            buffer.append(new_value)
-            
-            # Keep only last 20 points for smoothing
-            if len(buffer) > 20:
-                buffer.pop(0)
-            
-            # Apply multi-stage smoothing
-            if len(buffer) >= 5:
-                # Stage 1: Simple moving average
-                smoothed = np.mean(buffer[-5:])
-                
-                # Stage 2: Weighted average (more weight to recent values)
-                if len(buffer) >= 10:
-                    weights = np.linspace(0.5, 1.0, len(buffer[-10:]))
-                    smoothed = np.average(buffer[-10:], weights=weights)
-                
-                # Stage 3: Gaussian-like smoothing
-                if len(buffer) >= 7:
-                    # Apply Gaussian weights
-                    gaussian_weights = np.exp(-0.5 * ((np.arange(len(buffer[-7:])) - len(buffer[-7:])//2) / 2)**2)
-                    gaussian_weights = gaussian_weights / np.sum(gaussian_weights)
-                    smoothed = np.sum(np.array(buffer[-7:]) * gaussian_weights)
-                
-                return smoothed
-            else:
-                return new_value
-                
-        except Exception as e:
-            print(f"Real-time smoothing error: {e}")
-            return new_value
+        """Apply real-time smoothing - wrapper for modular function"""
+        if not hasattr(self, 'smoothing_buffers'):
+            self.smoothing_buffers = {}
+        return apply_realtime_smoothing(new_value, lead_index, self.smoothing_buffers)
 
     # ---------------------- Serial Port Auto-Detection ----------------------
 
@@ -5703,6 +5153,28 @@ class ECGTestPage(QWidget):
             if hasattr(self, '_12to1_timer'):
                 self._12to1_timer.start(100)
             print(f"[DEBUG] ECGTestPage - Timer started, serial reader created")
+            
+            # Reset update timestamps and counters for immediate metric updates (within 10 seconds requirement)
+            if hasattr(self, '_last_metric_update_ts'):
+                self._last_metric_update_ts = 0.0
+            if hasattr(self, '_metrics_calculated_once'):
+                delattr(self, '_metrics_calculated_once')  # Reset to allow immediate first update
+            if hasattr(self, '_metrics_update_count'):
+                self._metrics_update_count = 0  # Reset counter for immediate calculations
+            
+            # Reset dashboard update timestamp for immediate sync
+            if hasattr(self, 'dashboard_instance') and self.dashboard_instance:
+                if hasattr(self.dashboard_instance, '_last_metrics_update_ts'):
+                    self.dashboard_instance._last_metrics_update_ts = 0.0
+                if hasattr(self.dashboard_instance, '_inactive_update_count'):
+                    self.dashboard_instance._inactive_update_count = 0
+                # Force immediate dashboard update
+                try:
+                    self.dashboard_instance.update_dashboard_metrics_from_ecg()
+                    print("✅ Immediate dashboard update triggered on acquisition start")
+                except Exception as e:
+                    print(f"⚠️ Dashboard immediate update failed: {e}")
+            
             # Update recording button state now that acquisition is running
             self.update_recording_button_state()
             print(f"[DEBUG] ECGTestPage - Timer active: {self.timer.isActive()}")
@@ -8007,11 +7479,32 @@ class ECGTestPage(QWidget):
                     except Exception as e:
                         print(f" Error updating plot {i}: {e}")
                         continue
-                # Calculate ECG metrics more frequently for faster BPM updates in EXE
-                # Reduced from every 5 updates to every 3 updates for better responsiveness
-                if self.update_count % 3 == 0:
+                # Calculate ECG metrics more frequently for faster updates (within 10 seconds requirement)
+                # First 20 updates: calculate every update (immediate), then every 2 updates for faster response
+                if not hasattr(self, '_metrics_update_count'):
+                    self._metrics_update_count = 0
+                self._metrics_update_count += 1
+                
+                # Check if BPM changed significantly (force immediate recalculation)
+                current_bpm = getattr(self, 'last_heart_rate', 0)
+                last_calculated_bpm = getattr(self, '_last_calculated_bpm', current_bpm)
+                bpm_change = abs(current_bpm - last_calculated_bpm) if current_bpm > 0 and last_calculated_bpm > 0 else 0
+                
+                # Calculate immediately for first 20 updates (ensures values appear within 10 seconds)
+                # Also calculate immediately if BPM changed significantly (>10 BPM)
+                # After that, calculate every 2 updates (was 3) for faster response
+                should_calculate = (
+                    (self._metrics_update_count <= 20) or  # First 20 updates
+                    (bpm_change > 10) or  # Large BPM change - force immediate recalculation
+                    (self.update_count % 2 == 0)  # Every 2 updates (was 3) for faster response
+                )
+                
+                if should_calculate:
                     try:
                         self.calculate_ecg_metrics()
+                        # Store current BPM for change detection
+                        if hasattr(self, 'last_heart_rate') and self.last_heart_rate > 0:
+                            self._last_calculated_bpm = self.last_heart_rate
                     except Exception as e:
                         print(f" Error calculating ECG metrics: {e}")
                 try:

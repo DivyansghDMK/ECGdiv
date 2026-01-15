@@ -12,6 +12,7 @@ except ImportError:
 import sys
 import platform
 import numpy as np
+from collections import deque
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.animation import FuncAnimation
@@ -165,8 +166,8 @@ class Dashboard(QWidget):
         # This service runs in background and syncs every 5 seconds
         try:
             from utils.auto_sync_service import start_auto_sync
-            self.auto_sync_service = start_auto_sync(interval_seconds=5)
-            print(" Automatic cloud sync started (every 5 seconds)")
+            self.auto_sync_service = start_auto_sync(interval_seconds=15)
+            print(" Automatic cloud sync started (every 15 seconds)")
         except Exception as e:
             print(f" Could not start auto-sync service: {e}")
             self.auto_sync_service = None
@@ -187,9 +188,19 @@ class Dashboard(QWidget):
         self.role = role
         self.user_details = user_details or {}
         
-        # Initialize mode flags
+        # Initialize standard values flag
+        self._use_standard_values = True
+        print("✅ Standard values flag initialized")
+        
+        # Initialize BPM tracking for instant updates
+        self._last_bpm = None
+        self._bpm_change_threshold = 2  # Update if BPM changes by 2 or more
+        print("🔄 BPM change detection initialized")
+        
+        # Initialize theme modes
         self.dark_mode = False
         self.medical_mode = False
+        print("🎨 Theme modes initialized")
         
         self.setWindowTitle("ECG Monitor Dashboard")
         self.setGeometry(100, 100, 1300, 900)
@@ -350,7 +361,7 @@ class Dashboard(QWidget):
         self._cloud_sync_in_progress = False
         self.cloud_auto_timer = QTimer(self)
         self.cloud_auto_timer.timeout.connect(self.auto_sync_to_cloud)
-        self.cloud_auto_timer.start(5000)  # every 5s for quicker auto-backup
+        self.cloud_auto_timer.start(15000)  # every 15s (reduced from 5s for performance)
         
         # --- Greeting and Date Row ---
         greet_row = QHBoxLayout()
@@ -496,7 +507,7 @@ class Dashboard(QWidget):
         self.beat_interval = 1000  # Default 1 second between beats (60 BPM)
         self.heartbeat_timer = QTimer(self)
         self.heartbeat_timer.timeout.connect(self.animate_heartbeat)
-        self.heartbeat_timer.start(30)  # ~33 FPS
+        self.heartbeat_timer.start(100)  # 10 FPS (reduced from 33 FPS for performance)
         
         # --- Heartbeat Sound ---
         try:
@@ -535,8 +546,9 @@ class Dashboard(QWidget):
         self.ecg_canvas.axes.set_xticks([])
         self.ecg_canvas.axes.set_yticks([])
         self.ecg_canvas.axes.set_title("Lead II", fontsize=10)
-        # Set fixed Y-axis limits to center the ECG wave properly with more range
-        self.ecg_canvas.axes.set_ylim(-300, 300)
+        # Set fixed Y-axis limits: 0 to 4096 (hardware ADC range), centered at 2048
+        # This prevents wave cropping and properly displays hardware signals
+        self.ecg_canvas.axes.set_ylim(0, 4096)
         self.ecg_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         ecg_layout.addWidget(self.ecg_canvas)
         
@@ -914,7 +926,7 @@ class Dashboard(QWidget):
             ("HR", "00", "BPM", "heart_rate"),
             ("PR", "0", "ms", "pr_interval"),
             ("QRS Complex", "0", "ms", "qrs_duration"),
-            ("ST", "0.00", "mV", "st_interval"),
+            ("P", "0", "ms", "st_interval"),  # Label changed to "P" (duration in ms), key remains "st_interval" for compatibility
             ("QT/QTc", "0", "ms", "qtc_interval"),
         ]
         
@@ -947,8 +959,12 @@ class Dashboard(QWidget):
         
         # --- ECG Animation Setup ---
         self.ecg_x = np.linspace(0, 2, 500)
-        self.ecg_y = 150 * np.sin(2 * np.pi * 2 * self.ecg_x) + 30 * np.random.randn(500)  # Smaller amplitude to prevent cropping
+        # Initialize ECG data centered at 2048 (middle of 0-4096 ADC range)
+        # Use realistic hardware signal: baseline ~2048 with ±200 variation
+        self.ecg_y = 2048 + 200 * np.sin(2 * np.pi * 2 * self.ecg_x) + 50 * np.random.randn(500)
         self.ecg_line, = self.ecg_canvas.axes.plot(self.ecg_x, self.ecg_y, color="#ff6600", linewidth=0.5, antialiased=False)
+        # Disable auto-scaling to keep fixed Y-axis range (0-4096)
+        self.ecg_canvas.axes.set_autoscale_on(False)
         # Reduce CPU/GPU usage: lower refresh rate slightly and disable frame caching
         self.anim = FuncAnimation(
             self.ecg_canvas.figure,
@@ -962,7 +978,14 @@ class Dashboard(QWidget):
         # --- Dashboard Metrics Update Timer ---
         self.metrics_timer = QTimer(self)
         self.metrics_timer.timeout.connect(self.update_dashboard_metrics_from_ecg)
-        self.metrics_timer.start(1000)  # Update every second
+        self.metrics_timer.start(300)  # Update every 0.3 seconds for faster updates (within 10 seconds requirement)
+        
+        # Force initial metrics update immediately to ensure values appear within 10 seconds
+        try:
+            self.update_dashboard_metrics_from_ecg()
+            print(" Initial metrics update completed - values should appear immediately")
+        except Exception as e:
+            print(f" Initial metrics update failed: {e}")
         
         # Session timer removed - no longer needed
         # Add dashboard_page to stack
@@ -1680,6 +1703,55 @@ class Dashboard(QWidget):
             pass
         return False
 
+    def calculate_standard_ecg_metrics(self, bpm):
+        """Calculate standard ECG metrics based on BPM using medical formulas"""
+        try:
+            bpm = float(bpm)
+            print(f"🔍 DEBUG: calculate_standard_ecg_metrics called with BPM: {bpm}")
+            
+            # Standard medical formulas based on heart rate
+            
+            # PR Interval: Normal range 120-200ms, inversely related to HR
+            # Formula: PR = 180 - (BPM-60)*0.3 (simplified approximation)
+            pr_interval = max(120, min(200, 180 - (bpm - 60) * 0.3))
+            print(f"🔍 DEBUG: PR calculation: 180 - ({bpm}-60)*0.3 = {pr_interval}")
+            
+            # QRS Duration: Normal range 60-100ms, relatively stable
+            # Formula: QRS = 80 + (BPM-60)*0.1 (slight variation with HR)
+            qrs_duration = max(60, min(100, 80 + (bpm - 60) * 0.1))
+            print(f"🔍 DEBUG: QRS calculation: 80 + ({bpm}-60)*0.1 = {qrs_duration}")
+            
+            # QT Interval: Normal range 300-440ms, inversely related to HR
+            # Bazett's formula: QTc = QT / sqrt(RR), where RR = 60/BPM
+            # Simplified: QT = 400 - (BPM-60)*0.8
+            qt_interval = max(300, min(440, 400 - (bpm - 60) * 0.8))
+            print(f"🔍 DEBUG: QT calculation: 400 - ({bpm}-60)*0.8 = {qt_interval}")
+            
+            # QTc (corrected QT): Using Bazett's formula
+            rr_interval = 60000 / bpm  # RR in milliseconds
+            qtc_bazett = qt_interval / ((rr_interval / 1000) ** 0.5)
+            qtc_bazett = max(350, min(450, qtc_bazett))
+            print(f"🔍 DEBUG: QTc calculation: {qt_interval} / sqrt({rr_interval/1000}) = {qtc_bazett}")
+            
+            # ST Segment: Normal range -50 to +50 mV, relatively stable
+            st_segment = 0  # Normal baseline
+            print(f"🔍 DEBUG: ST segment: {st_segment}")
+            
+            result = {
+                'heart_rate': int(round(bpm)),
+                'pr_interval': int(round(pr_interval)),
+                'qrs_duration': int(round(qrs_duration)),
+                'qt_interval': int(round(qt_interval)),
+                'qtc_interval': f"{int(round(qt_interval))}/{int(round(qtc_bazett))}",
+                'st_interval': f"{st_segment}"
+            }
+            print(f"🔍 DEBUG: Final metrics: {result}")
+            return result
+            
+        except Exception as e:
+            print(f" Error calculating standard ECG metrics: {e}")
+            return None
+
     def calculate_live_ecg_metrics(self, ecg_signal, sampling_rate=None):
         """Calculate live ECG metrics from Lead 2 data - ADAPTIVE for 40-300 BPM
         
@@ -1834,274 +1906,111 @@ class Dashboard(QWidget):
                     # Ensure reasonable range (10-300 BPM)
                     heart_rate = max(10, min(300, heart_rate))
                     
-                    # ENHANCED ANTI-FLICKERING: Smooth over last 10 readings with outlier rejection
+                    # ENHANCED BPM SMOOTHING: Prevent flickering between 99-101 BPM
+                    # Use larger buffer and stricter change threshold for stability
                     if not hasattr(self, '_dashboard_bpm_buffer'):
-                        self._dashboard_bpm_buffer = []
-                    if not hasattr(self, '_dashboard_bpm_ema'):
-                        self._dashboard_bpm_ema = None
+                        self._dashboard_bpm_buffer = deque(maxlen=15)  # Increased buffer size
+                        self._dashboard_bpm_ema = float(heart_rate)
+                        self._dashboard_bpm_alpha = 0.12  # Slightly more responsive than before
+                        self._last_stable_dashboard_bpm = int(round(heart_rate))
                     
-                    # INSTANT BPM UPDATE: Like Fluke machine - update instantly for ANY change (1, 5, 20 BPM)
-                    # No lock mechanism - BPM fluctuates instantly like real ECG devices
+                    # Add to buffer
+                    self._dashboard_bpm_buffer.append(heart_rate)
                     
-                    # SMOOTH BPM TRANSITION: No fluctuations during change - smooth transition to new value
-                    import time
+                    # Calculate median of buffer (rejects outliers)
+                    if len(self._dashboard_bpm_buffer) >= 5:
+                        median_hr = np.median(list(self._dashboard_bpm_buffer))
+                    else:
+                        median_hr = heart_rate
                     
-                    # Initialize lock mechanism
-                    if not hasattr(self, '_dashboard_bpm_locked'):
-                        self._dashboard_bpm_locked = False
-                    if not hasattr(self, '_dashboard_bpm_unlock_buffer'):
-                        self._dashboard_bpm_unlock_buffer = []
-                    if not hasattr(self, '_dashboard_bpm_unlock_start_time'):
-                        self._dashboard_bpm_unlock_start_time = None
-                    if not hasattr(self, '_dashboard_bpm_prelock_buffer'):
-                        self._dashboard_bpm_prelock_buffer = []
-                    if not hasattr(self, '_dashboard_bpm_transition_target'):
-                        self._dashboard_bpm_transition_target = None
+                    # Apply EMA: new_EMA = alpha * new_value + (1 - alpha) * old_EMA
+                    self._dashboard_bpm_ema = self._dashboard_bpm_alpha * median_hr + (1 - self._dashboard_bpm_alpha) * self._dashboard_bpm_ema
                     
-                    if hasattr(self, '_last_stable_dashboard_bpm') and self._last_stable_dashboard_bpm is not None:
-                        bpm_change = abs(heart_rate - self._last_stable_dashboard_bpm)
-                        current_time = time.time()
-                        
-                        # If BPM is LOCKED: Track changes and show smooth transition (no fluctuations)
-                        if self._dashboard_bpm_locked:
-                            # ANY CHANGE (>= 1 BPM): Start transition tracking
-                            if bpm_change >= 1:
-                                if self._dashboard_bpm_unlock_start_time is None:
-                                    # New change detected - start tracking
-                                    self._dashboard_bpm_unlock_start_time = current_time
-                                    self._dashboard_bpm_unlock_buffer = []
-                                    self._dashboard_bpm_transition_target = None
-                                
-                                self._dashboard_bpm_unlock_buffer.append(float(heart_rate))
-                                if len(self._dashboard_bpm_unlock_buffer) > 10:
-                                    self._dashboard_bpm_unlock_buffer.pop(0)
-                                
-                                # Check if change persisted
-                                elapsed = current_time - self._dashboard_bpm_unlock_start_time
-                                
-                                # Small changes (1-4 BPM): Require 0.5 seconds persistence
-                                # Large changes (>= 5 BPM): Require 0.3 seconds persistence
-                                required_time = 0.5 if bpm_change < 5 else 0.3
-                                min_readings = 5 if bpm_change < 5 else 3
-                                
-                                if elapsed >= required_time and len(self._dashboard_bpm_unlock_buffer) >= min_readings:
-                                    # Check if readings are stable (within 2 BPM)
-                                    last_readings = self._dashboard_bpm_unlock_buffer[-min_readings:]
-                                    min_val = min(last_readings)
-                                    max_val = max(last_readings)
-                                    if (max_val - min_val) <= 2:
-                                        # Change confirmed - calculate target and unlock
-                                        median_new_bpm = int(round(np.median(last_readings)))
-                                        self._dashboard_bpm_locked = False
-                                        self._last_stable_dashboard_bpm = median_new_bpm
-                                        self._dashboard_bpm_unlock_buffer = []
-                                        self._dashboard_bpm_unlock_start_time = None
-                                        self._dashboard_bpm_transition_target = None
-                                        smoothed_bpm = median_new_bpm
-                                    else:
-                                        # Not stable - show smooth transition to average (prevents fluctuations)
-                                        if self._dashboard_bpm_transition_target is None:
-                                            self._dashboard_bpm_transition_target = int(round(np.mean(last_readings)))
-                                        # Smooth transition: gradually move from current to target
-                                        current_bpm = self._last_stable_dashboard_bpm
-                                        target_bpm = self._dashboard_bpm_transition_target
-                                        # Use weighted average for smooth transition (70% current, 30% target)
-                                        smoothed_bpm = int(round(0.7 * current_bpm + 0.3 * target_bpm))
-                                else:
-                                    # Still tracking - show smooth MONOTONIC transition (no fluctuations, no overshoot)
-                                    if len(self._dashboard_bpm_unlock_buffer) >= 2:
-                                        # Set target ONCE at the start - don't change it during confirmation (prevents fluctuations)
-                                        if self._dashboard_bpm_transition_target is None:
-                                            # Calculate initial target from first few readings
-                                            avg_new = int(round(np.mean(self._dashboard_bpm_unlock_buffer[-3:])))
-                                            self._dashboard_bpm_transition_target = avg_new
-                                        
-                                        # Smooth MONOTONIC transition display (always moves towards target, never overshoots)
-                                        current_bpm = self._last_stable_dashboard_bpm
-                                        target_bpm = self._dashboard_bpm_transition_target
-                                        
-                                        # Gradual transition based on elapsed time (smooth increment/decrement)
-                                        transition_progress = min(1.0, elapsed / required_time)
-                                        calculated_bpm = int(round(current_bpm + (target_bpm - current_bpm) * transition_progress))
-                                        
-                                        # Ensure monotonic transition (never overshoot target, always move towards it)
-                                        if target_bpm > current_bpm:
-                                            # Increasing: clamp to [current_bpm, target_bpm]
-                                            smoothed_bpm = max(current_bpm, min(calculated_bpm, target_bpm))
-                                        else:
-                                            # Decreasing: clamp to [target_bpm, current_bpm]
-                                            smoothed_bpm = max(target_bpm, min(calculated_bpm, current_bpm))
-                                    else:
-                                        # Not enough readings - keep locked
-                                        smoothed_bpm = self._last_stable_dashboard_bpm
-                            
-                            # NO CHANGE (< 1 BPM): Reset tracking, keep locked
-                            else:
-                                smoothed_bpm = self._last_stable_dashboard_bpm
-                                self._dashboard_bpm_unlock_buffer = []
-                                self._dashboard_bpm_unlock_start_time = None
-                                self._dashboard_bpm_transition_target = None
-                        
-                        # If BPM is NOT LOCKED: Collect 5 readings for accuracy, then lock
-                        else:
-                            # Collect readings before locking for accuracy
-                            self._dashboard_bpm_prelock_buffer.append(float(heart_rate))
-                            if len(self._dashboard_bpm_prelock_buffer) > 7:
-                                self._dashboard_bpm_prelock_buffer.pop(0)
-                            
-                            # Lock after 5 stable readings (more accurate than 3 readings - reduces 100 vs 102 error)
-                            if len(self._dashboard_bpm_prelock_buffer) >= 5:
-                                # Use median of last 5 readings for accuracy (reduces 100 vs 102 error)
-                                median_bpm = np.median(self._dashboard_bpm_prelock_buffer[-5:])
-                                self._last_stable_dashboard_bpm = int(round(median_bpm))
-                                self._dashboard_bpm_locked = True  # LOCK after accurate reading
-                                self._dashboard_bpm_prelock_buffer = []  # Clear buffer
-                                smoothed_bpm = self._last_stable_dashboard_bpm
-                            else:
-                                # Not enough readings yet - use current value temporarily
-                                smoothed_bpm = int(round(heart_rate))
+                    # Calculate smoothed BPM
+                    smoothed_bpm = int(round(self._dashboard_bpm_ema))
+                    
+                    # Final stability check: Only update if change is ≥2 BPM (prevents 99-101 flicker)
+                    if abs(smoothed_bpm - self._last_stable_dashboard_bpm) >= 2:
                                 self._last_stable_dashboard_bpm = smoothed_bpm
                     else:
-                        # First reading - use directly
-                        self._last_stable_dashboard_bpm = int(round(heart_rate))
+                        # Keep previous stable value if change is too small
                         smoothed_bpm = self._last_stable_dashboard_bpm
-                        if not hasattr(self, '_dashboard_bpm_ema'):
-                            self._dashboard_bpm_ema = float(smoothed_bpm)
-                        if not hasattr(self, '_dashboard_bpm_buffer'):
-                            self._dashboard_bpm_buffer = [float(smoothed_bpm)]
                     
-                    print("Pratyaksh Dashboard BPM:", self._last_stable_dashboard_bpm)
-                    metrics['heart_rate'] = self._last_stable_dashboard_bpm
+                    # Add heart rate to metrics
+                    metrics['heart_rate'] = smoothed_bpm
                 else:
                     metrics['heart_rate'] = 0
             else:
                 metrics['heart_rate'] = 0
             
-            # Calculate PR Interval - LIVE
-            if len(peaks) > 1:
-                pr_intervals = []
-                for i in range(min(3, len(peaks)-1)):
-                    r_peak = peaks[i]
-                    # Find P wave before R peak
-                    p_start = max(0, r_peak - int(0.2 * fs))  # 200ms before R
-                    p_segment = filtered_signal[p_start:r_peak]
-                    if len(p_segment) > 0:
-                        p_peak = p_start + np.argmax(p_segment)
-                        pr_interval = (r_peak - p_peak) / fs * 1000  # Convert to ms
-                        if 120 <= pr_interval <= 200:  # Reasonable PR interval
-                            pr_intervals.append(pr_interval)
-                
-                if pr_intervals:
-                    metrics['pr_interval'] = int(round(np.mean(pr_intervals)))
-                else:
-                    metrics['pr_interval'] = 160  # Fallback
-            else:
-                metrics['pr_interval'] = 160  # Fallback
+            # ❌ DELETED: Wrong single-beat calculations using 0.5-40 Hz display filter
+            # These destroy Q, S waves and T-wave tail and give wrong PR/QRS/QT/ST
+            # 
+            # ✅ REPLACED: Read directly from median-beat engine (clinical-grade measurements)
+            # All PR, QRS, QT, QTc, QTcF, ST values come from twelve_lead_test.py calculate_ecg_metrics()
+            # which uses 0.05-150 Hz measurement channel with slope-assisted and tangent methods
             
-            # Calculate QRS Duration - LIVE
-            if len(peaks) > 0:
-                qrs_durations = []
-                for r_peak in peaks[:min(5, len(peaks))]:  # Analyze first 5 beats
-                    # Find Q and S points around R peak
-                    search_window = int(0.08 * fs)  # 80ms window
-                    start_idx = max(0, r_peak - search_window)
-                    end_idx = min(len(filtered_signal), r_peak + search_window)
-                    
-                    segment = filtered_signal[start_idx:end_idx]
-                    if len(segment) > 0:
-                        # Find Q point (minimum before R)
-                        q_idx = start_idx + np.argmin(segment[:r_peak-start_idx]) if r_peak > start_idx else start_idx
-                        # Find S point (minimum after R)
-                        s_idx = r_peak + np.argmin(segment[r_peak-start_idx:]) if r_peak < end_idx else end_idx
+            if hasattr(self, 'ecg_test_page') and self.ecg_test_page:
+                # PR Interval from median-beat engine (rounded to integer)
+                pr_val = getattr(self.ecg_test_page, 'pr_interval', 0) or 0
+                print(f" Dashboard PR raw value: {pr_val}")  # Debug
+                
+                # Apply EMA smoothing for PR interval stability (like BPM)
+                if not hasattr(self, '_dashboard_pr_ema'):
+                    self._dashboard_pr_ema = pr_val
+                    self._dashboard_pr_alpha = 0.2  # Slightly more responsive than BPM
+                    print(f" Dashboard PR EMA initialized with: {pr_val}")  # Debug
+                else:
+                    self._dashboard_pr_ema = self._dashboard_pr_alpha * pr_val + (1 - self._dashboard_pr_alpha) * self._dashboard_pr_ema
+                    print(f" Dashboard PR EMA updated: raw={pr_val}, ema={self._dashboard_pr_ema}")  # Debug
+                
+                metrics['pr_interval'] = int(round(self._dashboard_pr_ema))
+                print(f" Dashboard PR final value: {metrics['pr_interval']}")  # Debug
+                
+                # QRS Duration from median-beat engine (rounded to integer)
+                qrs_val = getattr(self.ecg_test_page, 'last_qrs_duration', 0) or 0
+                
+                # Apply EMA smoothing for QRS duration stability
+                if not hasattr(self, '_dashboard_qrs_ema'):
+                    self._dashboard_qrs_ema = qrs_val
+                    self._dashboard_qrs_alpha = 0.2  # Same as PR for consistency
+                    print(f" Dashboard QRS EMA initialized with: {qrs_val}")  # Debug
+                else:
+                    self._dashboard_qrs_ema = self._dashboard_qrs_alpha * qrs_val + (1 - self._dashboard_qrs_alpha) * self._dashboard_qrs_ema
+                    print(f" Dashboard QRS EMA updated: raw={qrs_val}, ema={self._dashboard_qrs_ema}")  # Debug
+                
+                qrs_smoothed = int(round(self._dashboard_qrs_ema))
+                metrics['qrs_duration'] = qrs_smoothed
+                print(f" Dashboard QRS final value: {qrs_smoothed}")  # Debug
+                
+                # QT Interval from median-beat engine (rounded to integer)
+                qt_val = getattr(self.ecg_test_page, 'last_qt_interval', 0) or 0
+                metrics['qt_interval'] = int(round(qt_val))
                         
-                        qrs_duration = (s_idx - q_idx) / fs * 1000  # Convert to ms
-                        if 40 <= qrs_duration <= 200:  # Reasonable QRS duration
-                            qrs_durations.append(qrs_duration)
+                # QTc and QTcF from median-beat engine (rounded to integers)
+                qtc_val = getattr(self.ecg_test_page, 'last_qtc_interval', 0) or 0
+                qtcf_val = getattr(self.ecg_test_page, 'last_qtcf_interval', 0) or 0
+                qt_int = int(round(qt_val)) if qt_val > 0 else 0
+                qtc_int = int(round(qtc_val)) if qtc_val > 0 else 0
                 
-                if qrs_durations:
-                    metrics['qrs_duration'] = int(round(np.mean(qrs_durations)))
-                else:
-                    metrics['qrs_duration'] = 100  # Fallback
-            else:
-                metrics['qrs_duration'] = 100  # Fallback
-            
-            # Calculate ST Interval - LIVE
-            if len(peaks) > 0:
-                st_intervals = []
-                for r_peak in peaks[:min(5, len(peaks))]:
-                    # Find S point
-                    s_start = r_peak
-                    s_end = min(len(filtered_signal), r_peak + int(0.04 * fs))  # 40ms after R
-                    if s_end > s_start:
-                        s_point = s_start + np.argmin(filtered_signal[s_start:s_end])
-                    else:
-                        s_point = r_peak
-                    
-                    # Find T wave end (next R peak or end of signal)
-                    next_r = r_peak + int(0.4 * fs)  # Expected next R in 400ms
-                    if next_r < len(filtered_signal):
-                        # Find T wave end by looking for return to baseline
-                        t_segment = filtered_signal[r_peak:next_r]
-                        if len(t_segment) > 0:
-                            # Find where signal returns to baseline (mean of segment)
-                            baseline = np.mean(t_segment)
-                            t_end_candidates = np.where(np.abs(t_segment - baseline) < 0.1 * np.std(t_segment))[0]
-                            if len(t_end_candidates) > 0:
-                                t_end = r_peak + t_end_candidates[-1]
-                                st_interval = (t_end - s_point) / fs * 1000  # Convert to ms
-                                if 50 <= st_interval <= 300:  # Reasonable ST interval
-                                    st_intervals.append(st_interval)
-                
-                if st_intervals:
-                    metrics['st_interval'] = int(round(np.mean(st_intervals)))
-                else:
-                    metrics['st_interval'] = 100  # Fallback
-            else:
-                metrics['st_interval'] = 100  # Fallback
-            
-            # Calculate QT and Corrected QT (QTc/QTcF) - LIVE
-            if len(peaks) > 0:
-                qt_intervals = []
-                for r_peak in peaks[:min(5, len(peaks))]:
-                    # Find Q point (min before R)
-                    q_start = max(0, r_peak - int(0.04 * fs))
-                    q_point = q_start + np.argmin(filtered_signal[q_start:r_peak+1]) if r_peak > q_start else r_peak
-                    
-                    # Find T wave end (return to baseline)
-                    t_search_start = r_peak + int(0.08 * fs)
-                    t_search_end = min(len(filtered_signal), r_peak + int(0.45 * fs))
-                    if t_search_end > t_search_start:
-                        t_segment = filtered_signal[t_search_start:t_search_end]
-                        baseline = np.mean(filtered_signal[max(0, r_peak-int(0.2*fs)):r_peak-int(0.05*fs)])
-                        t_peak_idx = t_search_start + np.argmax(np.abs(t_segment - baseline))
-                        
-                        # Find return to baseline after T peak
-                        post_t = filtered_signal[t_peak_idx:t_search_end]
-                        t_end_candidates = np.where(np.abs(post_t - baseline) < 0.1 * np.std(filtered_signal))[0]
-                        if len(t_end_candidates) > 0:
-                            t_end = t_peak_idx + t_end_candidates[0]
-                            qt_ms = (t_end - q_point) / fs * 1000.0
-                            if 200 <= qt_ms <= 600:
-                                qt_intervals.append(qt_ms)
-                
-                if qt_intervals:
-                    qt_avg = np.mean(qt_intervals)
-                    # Use current HR for QTc
-                    hr_for_qtc = metrics.get('heart_rate', 60)
-                    rr_sec = 60.0 / max(1, hr_for_qtc)
-                    
-                    qtc_bazett = qt_avg / np.sqrt(rr_sec)
-                    # QTcF calculated but not shown on live pages anymore
-                    qtcf_frid = qt_avg / (rr_sec ** (1/3))
-                    
-                    metrics['qtc_interval'] = f"{int(round(qt_avg))}/{int(round(qtc_bazett))}"
+                if qt_int > 0 and qtc_int > 0:
+                    metrics['qtc_interval'] = f"{qt_int}/{qtc_int}"
+                elif qtc_int > 0:
+                    metrics['qtc_interval'] = str(qtc_int)
                 else:
                     metrics['qtc_interval'] = "0"
+                
+                # P-wave duration from median-beat engine (in ms)
+                p_duration = getattr(self.ecg_test_page, 'last_p_duration', 0) or 0
+                p_int = int(round(p_duration)) if p_duration > 0 else 0
+                metrics['st_interval'] = str(p_int)  # Key remains "st_interval" for UI compatibility
             else:
+                # Fallback if ECG test page not available
+                metrics['pr_interval'] = 0
+                metrics['qrs_duration'] = 0
+                metrics['qt_interval'] = 0
                 metrics['qtc_interval'] = "0"
-            
-            # metrics['sampling_rate'] = f"{sampling_rate} Hz"  # Commented out
-            
+                metrics['st_interval'] = "0"  # P-wave duration (ms)
             
             return metrics
             
@@ -2123,10 +2032,7 @@ class Dashboard(QWidget):
             if not self.is_ecg_active():
                 return
             
-            # Skip live calculations if demo mode is active (use fixed values instead)
-            if hasattr(self, 'ecg_test_page') and hasattr(self.ecg_test_page, 'demo_toggle'):
-                if self.ecg_test_page.demo_toggle.isChecked():
-                    return  # Demo mode uses fixed metrics, don't overwrite with live calculations
+            # Allow updates in demo mode - display the values set by demo_manager
             # Update Heart Rate
             if 'heart_rate' in ecg_metrics:
                 hr_val = ecg_metrics['heart_rate']
@@ -2241,22 +2147,20 @@ class Dashboard(QWidget):
                     try:
                         src = original_data[-window_samples:]
                         
-                        # Detrend/center for display only
-                        src_mean = np.mean(src)
-                        if np.isnan(src_mean) or np.isinf(src_mean):
-                            src_mean = 0
-                        src_centered = src - src_mean
-                        # Scale the signal to fit within the Y-axis range (-300 to 300)
-                        if np.std(src_centered) > 0:
-                            src_centered = src_centered * (200 / np.std(src_centered))  # Scale to fit in range
-                        
+                        # Use raw hardware data directly (0-4096 ADC range)
+                        # No centering or scaling - display as-is to prevent wave cropping
                         display_len = len(self.ecg_x)
-                        if src_centered.size <= 1:
-                            display_y = np.full(display_len, 0.0)  # Center at 0
+                        if src.size <= 1:
+                            # Default to center of ADC range (2048) if no data
+                            display_y = np.full(display_len, 2048.0)
                         else:
-                            x_src = np.linspace(0.0, 1.0, src_centered.size)
+                            # Resample to display length, keeping raw ADC values
+                            x_src = np.linspace(0.0, 1.0, src.size)
                             x_dst = np.linspace(0.0, 1.0, display_len)
-                            display_y = np.interp(x_dst, x_src, src_centered)
+                            display_y = np.interp(x_dst, x_src, src)
+                            
+                            # Ensure values are within valid ADC range (0-4096)
+                            display_y = np.clip(display_y, 0, 4096)
                         
                         # Validate display data
                         if np.any(np.isnan(display_y)) or np.any(np.isinf(display_y)):
@@ -2324,7 +2228,10 @@ class Dashboard(QWidget):
         """Fallback wave generation when ECG data is not available"""
         try:
             self.ecg_y = np.roll(self.ecg_y, -1)
-            self.ecg_y[-1] = 150 * np.sin(2 * np.pi * 2 * self.ecg_x[-1] + frame/10) + 30 * np.random.randn()  # Smaller amplitude
+            # Generate fallback wave centered at 2048 (middle of 0-4096 ADC range)
+            self.ecg_y[-1] = 2048 + 200 * np.sin(2 * np.pi * 2 * self.ecg_x[-1] + frame/10) + 50 * np.random.randn()
+            # Ensure values stay within valid ADC range
+            self.ecg_y[-1] = np.clip(self.ecg_y[-1], 0, 4096)
             self.ecg_line.set_ydata(self.ecg_y)
             # Do not compute/update metrics from mock wave; keep zeros until user starts
             return [self.ecg_line]
@@ -2429,7 +2336,7 @@ class Dashboard(QWidget):
             pass
     
     def sync_dashboard_metrics_to_ecg_page(self):
-        """Sync dashboard's current metric values to ECG test page for consistency"""
+        """Force sync dashboard's current metric values to ECG test page for consistency"""
         try:
             if not hasattr(self, 'ecg_test_page') or not self.ecg_test_page:
                 return
@@ -2437,148 +2344,186 @@ class Dashboard(QWidget):
             if not hasattr(self.ecg_test_page, 'metric_labels'):
                 return
                 
-            # Sync metric values from dashboard to ECG test page
-            # Extract numeric values from dashboard labels (e.g., "60 BPM" -> "60")
+            print(f"🔄 FORCE SYNC: Dashboard -> ECG Page")
+                
+            # Force sync metric values from dashboard to ECG test page
+            # Extract numeric values from dashboard labels (e.g., "100 BPM" -> "100")
             if 'heart_rate' in self.metric_labels and 'heart_rate' in self.ecg_test_page.metric_labels:
                 hr_text = self.metric_labels['heart_rate'].text()
                 hr_value = hr_text.split()[0] if ' ' in hr_text else hr_text
                 self.ecg_test_page.metric_labels['heart_rate'].setText(hr_value)
+                print(f"  HR: {hr_value}")
                 
             if 'pr_interval' in self.metric_labels and 'pr_interval' in self.ecg_test_page.metric_labels:
                 pr_text = self.metric_labels['pr_interval'].text()
                 pr_value = pr_text.split()[0] if ' ' in pr_text else pr_text
                 self.ecg_test_page.metric_labels['pr_interval'].setText(pr_value)
+                print(f"  PR: {pr_value}")
                 
             if 'qrs_duration' in self.metric_labels and 'qrs_duration' in self.ecg_test_page.metric_labels:
                 qrs_text = self.metric_labels['qrs_duration'].text()
                 qrs_value = qrs_text.split()[0] if ' ' in qrs_text else qrs_text
+                print(f"🔍 DEBUG SYNC: Dashboard QRS text: '{qrs_text}' -> value: '{qrs_value}'")
                 self.ecg_test_page.metric_labels['qrs_duration'].setText(qrs_value)
+                print(f"🔍 DEBUG SYNC: Set ECG page QRS to: '{qrs_value}'")
+                print(f"  QRS: {qrs_value}")
                 
             if 'st_interval' in self.metric_labels and 'st_segment' in self.ecg_test_page.metric_labels:
                 st_text = self.metric_labels['st_interval'].text()
                 st_value = st_text.split()[0] if ' ' in st_text else st_text
                 self.ecg_test_page.metric_labels['st_segment'].setText(st_value)
+                print(f"  ST: {st_value}")
                 
-            # Handle qtc_interval - dashboard might have "400/430 ms" format
+            # Handle qtc_interval - dashboard might have "286/369 ms" format
             if 'qtc_interval' in self.metric_labels and 'qtc_interval' in self.ecg_test_page.metric_labels:
                 qtc_text = self.metric_labels['qtc_interval'].text()
                 # Extract both QT and QTc values
                 if '/' in qtc_text:
-                    # Format: "400/430 ms" -> extract "400/430"
+                    # Format: "286/369 ms" -> extract "286/369"
                     qtc_value = qtc_text.split()[0] if ' ' in qtc_text else qtc_text
                     self.ecg_test_page.metric_labels['qtc_interval'].setText(qtc_value)
+                    print(f"  QT/QTc: {qtc_value}")
                 else:
                     # Single value
                     qtc_value = qtc_text.split()[0] if ' ' in qtc_text else qtc_text
                     self.ecg_test_page.metric_labels['qtc_interval'].setText(qtc_value)
+                    print(f"  QTc: {qtc_value}")
                     
-            print(" Synced dashboard metrics to ECG test page")
+            print("✅ FORCE SYNC COMPLETED - Both pages now show identical values")
             
         except Exception as e:
-            print(f" Error syncing dashboard metrics to ECG test page: {e}")
+            print(f"❌ Error syncing dashboard metrics to ECG test page: {e}")
+    
+    def periodic_sync_to_ecg_page(self):
+        """Periodic sync to ensure both pages always show identical values"""
+        try:
+            # Only sync if ECG is active (either demo or real mode)
+            if self.is_ecg_active():
+                self.sync_dashboard_metrics_to_ecg_page()
+        except Exception as e:
+            print(f"❌ Periodic sync error: {e}")
     
     def update_dashboard_metrics_from_ecg(self):
-        """Update dashboard metrics from ECG test page data - matches 12-lead test page update frequency"""
+        """Update dashboard metrics from ECG test page data - updates within 10 seconds when acquisition starts"""
         try:
             import time as _time
-            # Throttle: update every 1 second to match 12-lead test page update frequency (same as update_ecg_metrics_display)
+            # Throttle: update every 0.3 seconds for faster updates (within 10 seconds requirement)
+            # Allow immediate update on first call (when _last_metrics_update_ts is 0.0)
             if not hasattr(self, '_last_metrics_update_ts'):
                 self._last_metrics_update_ts = 0.0
-            if _time.time() - self._last_metrics_update_ts < 1.0:
-                return
-            self._last_metrics_update_ts = _time.time()
-            # Block updates for first-time users until acquisition/demo starts
-            if not self.is_ecg_active():
-                return
-
-            # In demo mode, use the fixed metrics values from demo_manager
-            if hasattr(self, 'ecg_test_page') and hasattr(self.ecg_test_page, 'demo_toggle'):
-                if self.ecg_test_page.demo_toggle.isChecked():
-                    return
-
-            if hasattr(self, 'ecg_test_page') and self.ecg_test_page:
-                # Get current metrics from ECG test page
-                if hasattr(self.ecg_test_page, 'get_current_metrics'):
-                    print("Pratyaksh get_current_metrics II")
-                    ecg_metrics = self.ecg_test_page.get_current_metrics()
-                    
-                    # Update dashboard metrics with ECG test page data
-                    hr_text = ecg_metrics.get('heart_rate') if ecg_metrics else None
-                    if (not hr_text or hr_text in ('00', '--')) and hasattr(self.ecg_test_page, '_last_displayed_hr'):
-                        try:
-                            last_hr = int(self.ecg_test_page._last_displayed_hr)
-                            hr_text = str(last_hr) if last_hr > 0 else None
-                        except Exception:
-                            hr_text = None
-                    if hr_text and hr_text not in ('00', '--', '0'):
-                            self.metric_labels['heart_rate'].setText(f"{hr_text} bpm")
-                    else:
-                        self.metric_labels['heart_rate'].setText("--")
-                    
-                    if 'pr_interval' in ecg_metrics:
-                        pr_text = ecg_metrics['pr_interval']
-                        if pr_text and pr_text != '--':
-                            self.metric_labels['pr_interval'].setText(f"{pr_text} ms")
-                        else:
-                            self.metric_labels['pr_interval'].setText("--")
-                    
-                    if 'qrs_duration' in ecg_metrics:
-                        qrs_text = ecg_metrics['qrs_duration']
-                        if qrs_text and qrs_text != '--':
-                            self.metric_labels['qrs_duration'].setText(f"{qrs_text} ms")
-                        else:
-                            self.metric_labels['qrs_duration'].setText("--")
-                    
-                    # if 'sampling_rate' in ecg_metrics:  # Commented out
-                    #     sr_text = ecg_metrics['sampling_rate']
-                    #     if sr_text and sr_text != '--':
-                    #         self.metric_labels['sampling_rate'].setText(f"{sr_text}")
-                    # Time Elapsed metric removed
-                    
-                    if 'st_interval' in ecg_metrics:
-                        st_text = ecg_metrics['st_interval']
-                        if st_text and st_text != '--':
-                            self.metric_labels['st_interval'].setText(f"{st_text} mV")
-                        else:
-                            self.metric_labels['st_interval'].setText("--")
-                    
-                    if 'qtc_interval' in ecg_metrics:
-                        qtc_text = ecg_metrics['qtc_interval']
-                        if qtc_text and qtc_text != '--':
-                            self.metric_labels['qtc_interval'].setText(f"{qtc_text} ms")
-                        else:
-                            self.metric_labels['qtc_interval'].setText("--/--")
-
-                    # Record to session file if enabled
-                    try:
-                        recorder = getattr(self, '_session_recorder', None)
-                        if recorder:
-                            # Pack metrics in compact form
-                            metrics_payload = {
-                                'heart_rate': self.metric_labels['heart_rate'].text() if 'heart_rate' in self.metric_labels else None,
-                                'pr_interval': self.metric_labels['pr_interval'].text() if 'pr_interval' in self.metric_labels else None,
-                                'qrs_duration': self.metric_labels['qrs_duration'].text() if 'qrs_duration' in self.metric_labels else None,
-                                'st_interval': self.metric_labels['st_interval'].text() if 'st_interval' in self.metric_labels else None,
-                                # 'sampling_rate': self.metric_labels['sampling_rate'].text() if 'sampling_rate' in self.metric_labels else None,  # Commented out
-                                'qtc_interval': self.metric_labels['qtc_interval'].text() if 'qtc_interval' in self.metric_labels else None,
-                            }
-                            # Update time elapsed for synchronization
-
-                            # Snapshot last 5s per lead
-                            from utils.session_recorder import SessionRecorder
-                            ecg_snapshot = SessionRecorder.snapshot_from_ecg_page(self.ecg_test_page, seconds=5.0)
-                            # Optional events hook: arrhythmia placeholder
-                            events = {}
-                            recorder.record(metrics_payload, ecg_snapshot, events)
-                    except Exception as rec_err:
-                        # Silent fail; never block UI
-                        pass
             
-            # After updating dashboard from ECG page, keep ECG page labels in sync (formatting differences)
-            try:
-                self.sync_dashboard_metrics_to_ecg_page()
-            except Exception:
-                pass
+            current_time = _time.time()
+            time_since_last = current_time - self._last_metrics_update_ts
+            
+            # Allow immediate update if it's been more than 0.3 seconds OR if this is the first update
+            if self._last_metrics_update_ts > 0.0 and time_since_last < 0.3:
+                return
+            
+            self._last_metrics_update_ts = current_time
+            
+            # Check if ECG is active, but allow updates even if not active yet (for initial display)
+            # Only skip if we've been waiting more than 2 seconds and still not active
+            if not self.is_ecg_active():
+                # Allow first few updates even if not active (for immediate display)
+                if not hasattr(self, '_inactive_update_count'):
+                    self._inactive_update_count = 0
+                self._inactive_update_count += 1
+                # Skip updates after 2 seconds if still not active
+                if self._inactive_update_count > 4:  # 4 * 0.5s = 2 seconds
+                    return
+            else:
+                # Reset counter when active
+                if hasattr(self, '_inactive_update_count'):
+                    self._inactive_update_count = 0
+
+            # Allow updates in demo mode - display the values set by demo_manager
+            # Allow updates in real mode - use real ECG calculations from hardware
+            if hasattr(self, 'ecg_test_page') and self.ecg_test_page:
+                # Check if demo mode is active
+                is_demo_mode = hasattr(self.ecg_test_page, 'demo_toggle') and self.ecg_test_page.demo_toggle.isChecked()
+                
+                if is_demo_mode:
+                    # Demo mode - use values from demo_manager
+                    print("Demo mode active - using demo_manager values")
+                if hasattr(self.ecg_test_page, 'get_current_metrics'):
+                    ecg_metrics = self.ecg_test_page.get_current_metrics()
+                    # Update dashboard with demo values
+                    hr_text = ecg_metrics.get('heart_rate', '--')
+                    if hr_text and hr_text not in ('--', '00', '0'):
+                        self.metric_labels['heart_rate'].setText(f"{hr_text} BPM")
+                    
+                    pr_text = ecg_metrics.get('pr_interval', '--')
+                    if pr_text and pr_text not in ('--', '00', '0'):
+                        self.metric_labels['pr_interval'].setText(f"{pr_text} ms")
+                    
+                    qrs_text = ecg_metrics.get('qrs_duration', '--')
+                    if qrs_text and qrs_text not in ('--', '00', '0'):
+                        self.metric_labels['qrs_duration'].setText(f"{qrs_text} ms")
+                    
+                    qtc_text = ecg_metrics.get('qtc_interval', '--')
+                    if qtc_text and qtc_text not in ('--', '00', '0'):
+                        self.metric_labels['qtc_interval'].setText(qtc_text)
+                    
+                    st_text = ecg_metrics.get('st_interval', '--')
+                    if st_text and st_text not in ('--', '00', '0'):
+                        self.metric_labels['st_interval'].setText(st_text)
+                    
+                    # Force sync to ECG page to ensure both pages show identical values
+                    try:
+                        self.sync_dashboard_metrics_to_ecg_page()
+                        print("✅ Demo mode synced - both pages now identical")
+                    except Exception as sync_err:
+                        print(f"⚠️ Demo mode sync failed: {sync_err}")
+                else:
+                    # ✅ FIXED: Real mode - Read directly from median-beat engine (clinical-grade measurements)
+                    # All values come from twelve_lead_test.py calculate_ecg_metrics()
+                    # which uses 0.05-150 Hz measurement channel with slope-assisted and tangent methods
+                    print("Real mode active - reading from median-beat engine")
+                    
+                    # ✅ Read directly from median-beat engine attributes (NOT formula-based calculations)
+                    pr_val = getattr(self.ecg_test_page, 'pr_interval', 0) or 0
+                    qrs_val = getattr(self.ecg_test_page, 'last_qrs_duration', 0) or 0
+                    qt_val = getattr(self.ecg_test_page, 'last_qt_interval', 0) or 0
+                    qtc_val = getattr(self.ecg_test_page, 'last_qtc_interval', 0) or 0
+                    qtcf_val = getattr(self.ecg_test_page, 'last_qtcf_interval', 0) or 0
+                    p_duration = getattr(self.ecg_test_page, 'last_p_duration', 0) or 0
+                    hr_val = getattr(self.ecg_test_page, 'last_heart_rate', 0) or 0
+                    
+                    # Round to integers (no decimals)
+                    pr_int = int(round(pr_val)) if pr_val > 0 else 0
+                    qrs_int = int(round(qrs_val)) if qrs_val > 0 else 0
+                    qt_int = int(round(qt_val)) if qt_val > 0 else 0
+                    qtc_int = int(round(qtc_val)) if qtc_val > 0 else 0
+                    p_int = int(round(p_duration)) if p_duration > 0 else 0
+                    
+                    # Update dashboard labels with clinical-grade values
+                    if hr_val > 0:
+                        self.metric_labels['heart_rate'].setText(f"{int(round(hr_val))} BPM")
+                    
+                    if pr_int > 0:
+                        self.metric_labels['pr_interval'].setText(f"{pr_int} ms")
+                    
+                    if qrs_int > 0:
+                        self.metric_labels['qrs_duration'].setText(f"{qrs_int} ms")
+                    
+                    if qt_int > 0 and qtc_int > 0:
+                        self.metric_labels['qtc_interval'].setText(f"{qt_int}/{qtc_int} ms")
+                    elif qtc_int > 0:
+                        self.metric_labels['qtc_interval'].setText(f"{qtc_int} ms")
+                    
+                    if p_int > 0:
+                        self.metric_labels['st_interval'].setText(f"{p_int}")
+                    else:
+                        self.metric_labels['st_interval'].setText("0")
+                    
+                    print(f"✅ Clinical metrics from median-beat engine: PR={pr_int}ms, QRS={qrs_int}ms, QT={qt_int}ms, QTc={qtc_int}ms, P={p_int}ms")
+                    
+                    # Sync to ECG page
+                    try:
+                        self.sync_dashboard_metrics_to_ecg_page()
+                    except Exception as sync_err:
+                        print(f"⚠️ Sync failed: {sync_err}")
+            
             # Record last update time
             self._last_metrics_update_ts = _time.time()
                             

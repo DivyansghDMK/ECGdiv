@@ -52,7 +52,7 @@ class Lead12BlackPage(QWidget):
         self.setLayout(layout)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_data)
-        self.timer.start(30)  # ~33 FPS
+        self.timer.start(50)  # 20 FPS (reduced from 33 FPS for performance)
     
     def closeEvent(self, event):
         """Clean up resources when widget is closed"""

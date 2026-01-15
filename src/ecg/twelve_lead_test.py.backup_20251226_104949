@@ -2062,11 +2062,9 @@ class ECGTestPage(QWidget):
             return
         
         # Get sampling rate (hardware is 500 Hz)
-        fs = 500.0  # Default for hardware acquisition
-        if hasattr(self, 'sampler') and hasattr(self.sampler, 'sampling_rate') and self.sampler.sampling_rate > 10:
-            fs = float(self.sampler.sampling_rate)
-        elif hasattr(self, 'sampling_rate') and self.sampling_rate > 10:
-            fs = float(self.sampling_rate)
+        fs = 500  # Default for hardware acquisition
+        if hasattr(self, 'sampler') and hasattr(self.sampler, 'sampling_rate') and self.sampler.sampling_rate:
+            fs = int(self.sampler.sampling_rate)
         
         # Detect R-peaks in raw Lead II (fallback to V2 if Lead II insufficient) - GE/Philips standard
         from scipy.signal import butter, filtfilt, find_peaks
