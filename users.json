@@ -109,5 +109,16 @@
     "age": "89",
     "gender": "89",
     "address": "89"
+  },
+  "95": {
+    "password": "Divyansh",
+    "full_name": "Divyansh",
+    "phone": "95",
+    "serial_id": "123456789",
+    "email": "",
+    "signup_date": "2026-01-16",
+    "age": "22",
+    "gender": "Male",
+    "address": "1220 JFF SECTOR 2 FBD HRY"
   }
 }

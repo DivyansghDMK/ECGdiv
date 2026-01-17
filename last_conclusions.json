@@ -1,13 +1,16 @@
 {
-  "timestamp": "2026-01-15 17:00:27",
+  "timestamp": "2026-01-17 10:00:39",
   "findings": [
-    "Tachycardia detected",
-    "Normal PR interval",
+    "Rhythm Analysis",
+    "Severe Tachycardia",
+    "Short PR interval",
     "Normal QRS duration",
     "Low HRV"
   ],
   "recommendations": [
-    "Monitor symptoms, consider medical evaluation",
+    "Review detected arrhythmia pattern, consult physician if persistent",
+    "Consult physician, check for arrhythmias",
+    "Monitor for accessory pathway patterns, consult if symptomatic",
     "Ensure adequate rest and stress management"
   ]
 }
